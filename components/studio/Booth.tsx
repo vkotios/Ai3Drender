@@ -12,7 +12,14 @@ const WALL_THICKNESS = 0.06;
  * Walls matter more than they look - in a booth render most of the light on the
  * furniture is bounced off them, so their colour tints every material.
  */
-export function Booth({ environment }: { environment: EnvironmentSettings }) {
+export function Booth({
+  environment,
+  showGrid = true,
+}: {
+  environment: EnvironmentSettings;
+  /** Forced off while path tracing - the grid is an operator aid, not set dressing. */
+  showGrid?: boolean;
+}) {
   const { boothWidth: w, boothDepth: d, boothHeight: h, walls } = environment;
 
   return (
@@ -54,7 +61,7 @@ export function Booth({ environment }: { environment: EnvironmentSettings }) {
         />
       )}
 
-      {environment.showGrid && (
+      {environment.showGrid && showGrid && (
         <Grid
           args={[w, d]}
           cellSize={0.5}

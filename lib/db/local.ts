@@ -3,6 +3,8 @@ import { mkdir, readFile, rename, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import type {
+  Annotation,
+  AnnotationStatus,
   AssetVersion,
   FurnitureAsset,
   Job,
@@ -10,14 +12,17 @@ import type {
   Project,
   Scene,
   SceneDoc,
+  SceneRender,
   SourceImage,
   Uuid,
 } from '@/lib/types';
 import type {
   Blob,
+  NewAnnotation,
   NewAsset,
   NewAssetVersion,
   NewJob,
+  NewSceneRender,
   NewProject,
   NewScene,
   NewSourceImage,
@@ -32,6 +37,8 @@ interface Db {
   scenes: Scene[];
   sceneVersions: { id: string; sceneId: string; versionNumber: number; doc: SceneDoc; note: string; createdAt: string }[];
   jobs: Job[];
+  annotations: Annotation[];
+  sceneRenders: SceneRender[];
 }
 
 const EMPTY: Db = {
@@ -42,6 +49,8 @@ const EMPTY: Db = {
   scenes: [],
   sceneVersions: [],
   jobs: [],
+  annotations: [],
+  sceneRenders: [],
 };
 
 const ROOT = path.join(process.cwd(), 'storage-local');
@@ -138,6 +147,8 @@ export class LocalStore implements Store {
       db.scenes = db.scenes.filter((s) => s.projectId !== id);
       db.sceneVersions = db.sceneVersions.filter((v) => !sceneIds.includes(v.sceneId));
       db.jobs = db.jobs.filter((j) => j.projectId !== id);
+      db.annotations = db.annotations.filter((a) => !assetIds.includes(a.assetId));
+      db.sceneRenders = db.sceneRenders.filter((r) => r.projectId !== id);
     });
   }
 
@@ -207,6 +218,7 @@ export class LocalStore implements Store {
     return this.mutate((db) => {
       db.assets = db.assets.filter((a) => a.id !== id);
       db.assetVersions = db.assetVersions.filter((v) => v.assetId !== id);
+      db.annotations = db.annotations.filter((a) => a.assetId !== id);
     });
   }
 
@@ -310,6 +322,7 @@ export class LocalStore implements Store {
     return this.mutate((db) => {
       db.scenes = db.scenes.filter((s) => s.id !== id);
       db.sceneVersions = db.sceneVersions.filter((v) => v.sceneId !== id);
+      db.sceneRenders = db.sceneRenders.filter((r) => r.sceneId !== id);
     });
   }
 
@@ -370,6 +383,73 @@ export class LocalStore implements Store {
       job.message = 'Starting';
       job.updatedAt = now();
       return job;
+    });
+  }
+
+  /* Annotations ------------------------------------------------------------ */
+
+  createAnnotation(input: NewAnnotation): Promise<Annotation> {
+    return this.mutate((db) => {
+      const annotation: Annotation = {
+        ...input,
+        id: randomUUID(),
+        status: 'open',
+        resolvedByVersionId: null,
+        createdAt: now(),
+      };
+      db.annotations.push(annotation);
+      return annotation;
+    });
+  }
+
+  async getAnnotation(id: Uuid): Promise<Annotation | null> {
+    const db = await this.read();
+    return db.annotations.find((a) => a.id === id) ?? null;
+  }
+
+  async listAnnotations(assetIds: Uuid[], statuses?: AnnotationStatus[]): Promise<Annotation[]> {
+    if (assetIds.length === 0) return [];
+    const db = await this.read();
+    return db.annotations
+      .filter((a) => assetIds.includes(a.assetId) && (!statuses || statuses.includes(a.status)))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  updateAnnotation(id: Uuid, patch: Partial<Annotation>): Promise<Annotation> {
+    return this.mutate((db) => {
+      const annotation = db.annotations.find((a) => a.id === id);
+      if (!annotation) throw new Error(`annotation ${id} not found`);
+      Object.assign(annotation, patch);
+      return annotation;
+    });
+  }
+
+  deleteAnnotation(id: Uuid): Promise<void> {
+    return this.mutate((db) => {
+      db.annotations = db.annotations.filter((a) => a.id !== id);
+    });
+  }
+
+  /* Rendered output -------------------------------------------------------- */
+
+  createSceneRender(input: NewSceneRender): Promise<SceneRender> {
+    return this.mutate((db) => {
+      const render: SceneRender = { ...input, id: randomUUID(), createdAt: now() };
+      db.sceneRenders.push(render);
+      return render;
+    });
+  }
+
+  async listSceneRenders(sceneId: Uuid): Promise<SceneRender[]> {
+    const db = await this.read();
+    return db.sceneRenders
+      .filter((r) => r.sceneId === sceneId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  deleteSceneRender(id: Uuid): Promise<void> {
+    return this.mutate((db) => {
+      db.sceneRenders = db.sceneRenders.filter((r) => r.id !== id);
     });
   }
 

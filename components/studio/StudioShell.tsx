@@ -13,12 +13,14 @@ import {
   slugify,
   type ExportFormat,
 } from '@/lib/studio/export';
-import { useStudio, type LoadedVersion } from '@/lib/studio/store';
-import type { Project, Scene } from '@/lib/types';
+import { useStudio, type LoadedVersion, type StudioMode } from '@/lib/studio/store';
+import type { Annotation, Project, Scene } from '@/lib/types';
 
+import { AnnotationPanel } from './AnnotationPanel';
 import { Inspector } from './Inspector';
+import { RenderPanel, type StoredRender } from './RenderPanel';
 import { Outliner } from './Outliner';
-import type { GizmoMode } from './StudioCanvas';
+import type { GizmoMode, RenderMode, RenderSettings } from './StudioCanvas';
 
 // WebGL cannot render on the server, and drei's Environment pulls its HDRIs at
 // runtime, so the viewport is client-only.
@@ -36,18 +38,39 @@ export function StudioShell({
   scene,
   versions,
   available,
+  annotations,
+  initialRenders,
+  conceptAvailable,
 }: {
   project: Project;
   scene: Scene;
   versions: LoadedVersion[];
   available: LoadedVersion[];
+  annotations: Annotation[];
+  initialRenders: StoredRender[];
+  /** False when GEMINI_API_KEY is unset, so the concept button explains itself. */
+  conceptAvailable: boolean;
 }) {
   const load = useStudio((s) => s.load);
   const doc = useStudio((s) => s.doc);
   const dirty = useStudio((s) => s.dirty);
   const markSaved = useStudio((s) => s.markSaved);
+  const mode = useStudio((s) => s.mode);
+  const setMode = useStudio((s) => s.setMode);
+  const setAnnotations = useStudio((s) => s.setAnnotations);
 
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>('translate');
+  const [panel, setPanel] = useState<'inspect' | 'render'>('inspect');
+  const [renderMode, setRenderMode] = useState<RenderMode>('preview');
+  const [renderSettings, setRenderSettings] = useState<RenderSettings>({
+    bounces: 5,
+    maxSamples: 256,
+    resolutionScale: 1,
+  });
+  const [samples, setSamples] = useState(0);
+  const [converged, setConverged] = useState(false);
+  const [renders, setRenders] = useState<StoredRender[]>(initialRenders);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -61,12 +84,113 @@ export function StudioShell({
     // piece, so staging a new one needs no extra fetch.
     const seen = new Map(versions.map((v) => [v.version.id, v]));
     for (const v of available) if (!seen.has(v.version.id)) seen.set(v.version.id, v);
-    load(scene, [...seen.values()]);
-  }, [load, scene, versions, available]);
+    load(scene, [...seen.values()], annotations);
+  }, [load, scene, versions, available, annotations]);
 
   const onExportRootReady = useCallback((root: THREE.Group | null) => {
     exportRoot.current = root;
   }, []);
+
+  const onCanvasReady = useCallback((canvas: HTMLCanvasElement | null) => {
+    canvasRef.current = canvas;
+  }, []);
+
+  // Called every frame while tracing. The tracer reports fractional samples
+  // while it warms up at low resolution, so round for display and only commit
+  // to state when the whole number actually changes.
+  const onSamples = useCallback((next: number, done: boolean) => {
+    // Quantise to a tenth: enough resolution to show progress below the first
+    // full sample, without re-rendering the panel on every frame.
+    const value = Math.round(next * 10) / 10;
+    setSamples((current) => (current === value ? current : value));
+    setConverged((current) => (current === done ? current : done));
+  }, []);
+
+  /** Read the current frame out of the WebGL canvas as a PNG. */
+  const captureCanvas = useCallback(async (): Promise<Blob> => {
+    const canvas = canvasRef.current;
+    if (!canvas) throw new Error('The viewport is not ready');
+    return new Promise((resolve, reject) =>
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error('Could not read the viewport'))),
+        'image/png',
+      ),
+    );
+  }, []);
+
+  const saveRender = useCallback(async () => {
+    setBusy('Saving frame');
+    setError(null);
+    try {
+      const blob = await captureCanvas();
+      const form = new FormData();
+      form.append('file', blob, 'render.png');
+      form.append('samples', String(samples));
+      form.append('width', String(canvasRef.current?.width ?? 0));
+      form.append('height', String(canvasRef.current?.height ?? 0));
+
+      const response = await fetch(`/api/scenes/${scene.id}/renders`, {
+        method: 'POST',
+        body: form,
+      });
+      if (!response.ok) throw new Error((await response.json()).error ?? 'Could not save');
+      const saved: StoredRender = await response.json();
+      setRenders((current) => [saved, ...current]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not save the frame');
+    } finally {
+      setBusy(null);
+    }
+  }, [captureCanvas, samples, scene.id]);
+
+  const conceptRender = useCallback(
+    async (instruction: string) => {
+      setBusy('Rendering concept');
+      setError(null);
+      try {
+        const blob = await captureCanvas();
+        const form = new FormData();
+        form.append('file', blob, 'capture.png');
+        form.append('instruction', instruction);
+        form.append('width', String(canvasRef.current?.width ?? 0));
+        form.append('height', String(canvasRef.current?.height ?? 0));
+
+        const queued = await fetch(`/api/scenes/${scene.id}/concept`, {
+          method: 'POST',
+          body: form,
+        });
+        if (!queued.ok) throw new Error((await queued.json()).error ?? 'Could not queue');
+
+        await fetch('/api/jobs/tick', { method: 'POST' });
+        const listed = await fetch(`/api/scenes/${scene.id}/renders`);
+        if (listed.ok) setRenders(await listed.json());
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'Concept render failed');
+      } finally {
+        setBusy(null);
+      }
+    },
+    [captureCanvas, scene.id],
+  );
+
+  /**
+   * Re-pull notes after a revision round.
+   *
+   * Deliberately keyed off the pieces loaded in this session rather than the
+   * saved scene: staging is not persisted until Save, so asking the server
+   * what is on the stand would come back empty and wipe the panel.
+   */
+  const refresh = useCallback(async () => {
+    const assetIds = [
+      ...new Set(Object.values(useStudio.getState().versions).map((v) => v.version.assetId)),
+    ];
+    const lists = await Promise.all(
+      assetIds.map((id) =>
+        fetch(`/api/assets/${id}/annotations`).then((r) => (r.ok ? r.json() : [])),
+      ),
+    );
+    setAnnotations(lists.flat());
+  }, [setAnnotations]);
 
   const save = useCallback(async () => {
     const current = useStudio.getState().doc;
@@ -154,20 +278,44 @@ export function StudioShell({
 
         <div className="ml-auto flex items-center gap-1.5">
           <div className="mr-1 flex rounded-md border border-shell-700 p-0.5">
-            {(['translate', 'rotate', 'scale'] as GizmoMode[]).map((mode) => (
+            {(['layout', 'comment'] as StudioMode[]).map((value) => (
               <button
-                key={mode}
-                onClick={() => setGizmoMode(mode)}
+                key={value}
+                onClick={() => setMode(value)}
                 className={`rounded px-2 py-1 text-[11px] capitalize transition ${
-                  gizmoMode === mode
-                    ? 'bg-shell-700 text-shell-100'
-                    : 'text-shell-400 hover:text-shell-100'
+                  mode === value ? 'bg-shell-700 text-shell-100' : 'text-shell-400 hover:text-shell-100'
                 }`}
               >
-                {mode}
+                {value}
               </button>
             ))}
           </div>
+
+          {mode === 'layout' && renderMode === 'preview' && (
+            <div className="mr-1 flex rounded-md border border-shell-700 p-0.5">
+              {(['translate', 'rotate', 'scale'] as GizmoMode[]).map((value) => (
+                <button
+                  key={value}
+                  onClick={() => setGizmoMode(value)}
+                  className={`rounded px-2 py-1 text-[11px] capitalize transition ${
+                    gizmoMode === value
+                      ? 'bg-shell-700 text-shell-100'
+                      : 'text-shell-400 hover:text-shell-100'
+                  }`}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <Button
+            size="sm"
+            variant={panel === 'render' ? 'primary' : 'default'}
+            onClick={() => setPanel((p) => (p === 'render' ? 'inspect' : 'render'))}
+          >
+            Render
+          </Button>
 
           <Button size="sm" onClick={artDirect} disabled={Boolean(busy)}>
             Art-direct
@@ -188,19 +336,65 @@ export function StudioShell({
 
         <main className="relative min-w-0 flex-1 bg-shell-900">
           {doc && (
-            <StudioCanvas doc={doc} gizmoMode={gizmoMode} onExportRootReady={onExportRootReady} />
+            <StudioCanvas
+              doc={doc}
+              gizmoMode={gizmoMode}
+              renderMode={renderMode}
+              renderSettings={renderSettings}
+              onSamples={onSamples}
+              onExportRootReady={onExportRootReady}
+              onCanvasReady={onCanvasReady}
+            />
           )}
           <p className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-shell-950/80 px-3 py-1 text-[11px] text-shell-400">
-            Drag to orbit · scroll to zoom · click a piece to select it
+            {renderMode === 'pathtrace'
+              ? `Path tracing — ${formatSamples(samples)} sample${samples === 1 ? '' : 's'}${
+                  converged ? ' · converged' : ''
+                }`
+              : mode === 'comment'
+                ? 'Click anywhere on a piece to pin a note there'
+                : 'Drag to orbit · scroll to zoom · click a piece to select it'}
           </p>
         </main>
 
         <aside className="w-80 shrink-0 overflow-y-auto border-l border-shell-800 bg-shell-950 p-3">
-          {doc ? <Inspector /> : <PanelSkeleton rows={4} />}
+          {!doc ? (
+            <PanelSkeleton rows={4} />
+          ) : panel === 'render' ? (
+            <RenderPanel
+              renderMode={renderMode}
+              onRenderModeChange={(next) => {
+                setRenderMode(next);
+                setSamples(0);
+                setConverged(false);
+              }}
+              settings={renderSettings}
+              onSettingsChange={setRenderSettings}
+              samples={samples}
+              converged={converged}
+              renders={renders}
+              onSaveRender={saveRender}
+              onConceptRender={conceptRender}
+              conceptAvailable={conceptAvailable}
+              busy={busy}
+            />
+          ) : mode === 'comment' ? (
+            <AnnotationPanel sceneId={scene.id} onChanged={refresh} />
+          ) : (
+            <Inspector />
+          )}
         </aside>
       </div>
     </div>
   );
+}
+
+/**
+ * Sample counts start fractional while the tracer warms up at low resolution.
+ * Showing "0" then would read as broken, so keep a decimal until it clears 10.
+ */
+export function formatSamples(samples: number): string {
+  return samples >= 10 ? String(Math.round(samples)) : samples.toFixed(1);
 }
 
 /** Placeholder shown for the one frame before the store is seeded. */

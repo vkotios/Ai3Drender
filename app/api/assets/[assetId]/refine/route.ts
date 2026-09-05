@@ -17,10 +17,22 @@ export async function POST(request: Request, { params }: Params) {
       versionId?: string;
       instruction?: string;
       rebuildMesh?: boolean;
+      annotationIds?: string[];
       specOverrides?: RefinementRequest['specOverrides'];
     };
 
-    if (!body.instruction?.trim()) return apiError('Describe the change you want');
+    // Either a written instruction or a set of pinned notes is enough to act on.
+    const annotationIds = body.annotationIds ?? [];
+    if (!body.instruction?.trim() && annotationIds.length === 0) {
+      return apiError('Describe the change you want, or pin at least one note');
+    }
+
+    if (annotationIds.length > 0) {
+      const owned = new Set((await store.listAnnotations([asset.id])).map((a) => a.id));
+      if (annotationIds.some((id) => !owned.has(id))) {
+        return apiError('One or more notes do not belong to this piece');
+      }
+    }
 
     const versionId = body.versionId ?? asset.currentVersionId;
     if (!versionId) return apiError('This piece has no version to refine yet');
@@ -29,7 +41,8 @@ export async function POST(request: Request, { params }: Params) {
     if (!parent || parent.assetId !== asset.id) return apiError('Version not found', 404);
 
     const refinement: RefinementRequest = {
-      instruction: body.instruction.trim(),
+      instruction: body.instruction?.trim() ?? '',
+      annotationIds,
       rebuildMesh: body.rebuildMesh ?? false,
       specOverrides: body.specOverrides,
     };

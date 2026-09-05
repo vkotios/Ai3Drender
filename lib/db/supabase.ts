@@ -1,20 +1,25 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import type {
+  Annotation,
+  AnnotationStatus,
   AssetVersion,
   FurnitureAsset,
   Job,
   JobStatus,
   Project,
   Scene,
+  SceneRender,
   SourceImage,
   Uuid,
 } from '@/lib/types';
 import type {
   Blob,
+  NewAnnotation,
   NewAsset,
   NewAssetVersion,
   NewJob,
+  NewSceneRender,
   NewProject,
   NewScene,
   NewSourceImage,
@@ -71,7 +76,6 @@ const toVersion = (r: Row): AssetVersion => ({
   views: r.views ?? [],
   meshPath: r.mesh_path,
   meshExtentMm: r.mesh_extent_mm === null ? null : Number(r.mesh_extent_mm),
-  previewPath: r.preview_path,
   provider: r.provider,
   providerJobId: r.provider_job_id,
   refinement: r.refinement,
@@ -88,6 +92,36 @@ const toScene = (r: Row): Scene => ({
   acceptedAt: r.accepted_at,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
+});
+
+const toAnnotation = (r: Row): Annotation => ({
+  id: r.id,
+  assetId: r.asset_id,
+  assetVersionId: r.asset_version_id,
+  sceneId: r.scene_id,
+  point: r.point,
+  normal: r.normal,
+  partName: r.part_name,
+  componentName: r.component_name,
+  componentRole: r.component_role,
+  anchorDescription: r.anchor_description,
+  body: r.body,
+  status: r.status,
+  resolvedByVersionId: r.resolved_by_version_id,
+  createdAt: r.created_at,
+});
+
+const toSceneRender = (r: Row): SceneRender => ({
+  id: r.id,
+  sceneId: r.scene_id,
+  projectId: r.project_id,
+  kind: r.kind,
+  path: r.path,
+  width: r.width,
+  height: r.height,
+  samples: r.samples,
+  prompt: r.prompt,
+  createdAt: r.created_at,
 });
 
 const toJob = (r: Row): Job => ({
@@ -267,7 +301,6 @@ export class SupabaseStore implements Store {
         views: input.views,
         mesh_path: input.meshPath,
         mesh_extent_mm: input.meshExtentMm,
-        preview_path: input.previewPath,
         provider: input.provider,
         provider_job_id: input.providerJobId,
         refinement: input.refinement,
@@ -300,7 +333,6 @@ export class SupabaseStore implements Store {
     if (patch.views !== undefined) update.views = patch.views;
     if (patch.meshPath !== undefined) update.mesh_path = patch.meshPath;
     if (patch.meshExtentMm !== undefined) update.mesh_extent_mm = patch.meshExtentMm;
-    if (patch.previewPath !== undefined) update.preview_path = patch.previewPath;
     if (patch.provider !== undefined) update.provider = patch.provider;
     if (patch.providerJobId !== undefined) update.provider_job_id = patch.providerJobId;
     if (patch.refinement !== undefined) update.refinement = patch.refinement;
@@ -446,6 +478,92 @@ export class SupabaseStore implements Store {
       if (claimed.data) return toJob(claimed.data);
     }
     return null;
+  }
+
+  /* Annotations ------------------------------------------------------------ */
+
+  async createAnnotation(input: NewAnnotation): Promise<Annotation> {
+    const res = await this.db
+      .from('annotations')
+      .insert({
+        asset_id: input.assetId,
+        asset_version_id: input.assetVersionId,
+        scene_id: input.sceneId,
+        point: input.point,
+        normal: input.normal,
+        part_name: input.partName,
+        component_name: input.componentName,
+        component_role: input.componentRole,
+        anchor_description: input.anchorDescription,
+        body: input.body,
+      })
+      .select()
+      .single();
+    return toAnnotation(unwrap('createAnnotation', res));
+  }
+
+  async getAnnotation(id: Uuid): Promise<Annotation | null> {
+    const res = await this.db.from('annotations').select('*').eq('id', id).maybeSingle();
+    if (res.error) throw new Error(`getAnnotation: ${res.error.message}`);
+    return res.data ? toAnnotation(res.data) : null;
+  }
+
+  async listAnnotations(assetIds: Uuid[], statuses?: AnnotationStatus[]): Promise<Annotation[]> {
+    if (assetIds.length === 0) return [];
+    let q = this.db.from('annotations').select('*').in('asset_id', assetIds);
+    if (statuses?.length) q = q.in('status', statuses);
+    const res = await q.order('created_at');
+    return unwrap('listAnnotations', res).map(toAnnotation);
+  }
+
+  async updateAnnotation(id: Uuid, patch: Partial<Annotation>): Promise<Annotation> {
+    const update: Row = {};
+    if (patch.body !== undefined) update.body = patch.body;
+    if (patch.status !== undefined) update.status = patch.status;
+    if (patch.resolvedByVersionId !== undefined) {
+      update.resolved_by_version_id = patch.resolvedByVersionId;
+    }
+    const res = await this.db.from('annotations').update(update).eq('id', id).select().single();
+    return toAnnotation(unwrap('updateAnnotation', res));
+  }
+
+  async deleteAnnotation(id: Uuid): Promise<void> {
+    const { error } = await this.db.from('annotations').delete().eq('id', id);
+    if (error) throw new Error(`deleteAnnotation: ${error.message}`);
+  }
+
+  /* Rendered output -------------------------------------------------------- */
+
+  async createSceneRender(input: NewSceneRender): Promise<SceneRender> {
+    const res = await this.db
+      .from('scene_renders')
+      .insert({
+        scene_id: input.sceneId,
+        project_id: input.projectId,
+        kind: input.kind,
+        path: input.path,
+        width: input.width,
+        height: input.height,
+        samples: input.samples,
+        prompt: input.prompt,
+      })
+      .select()
+      .single();
+    return toSceneRender(unwrap('createSceneRender', res));
+  }
+
+  async listSceneRenders(sceneId: Uuid): Promise<SceneRender[]> {
+    const res = await this.db
+      .from('scene_renders')
+      .select('*')
+      .eq('scene_id', sceneId)
+      .order('created_at', { ascending: false });
+    return unwrap('listSceneRenders', res).map(toSceneRender);
+  }
+
+  async deleteSceneRender(id: Uuid): Promise<void> {
+    const { error } = await this.db.from('scene_renders').delete().eq('id', id);
+    if (error) throw new Error(`deleteSceneRender: ${error.message}`);
   }
 
   /* Blobs ------------------------------------------------------------------ */

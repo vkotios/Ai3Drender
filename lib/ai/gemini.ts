@@ -288,12 +288,23 @@ Keep the prop list to what genuinely helps the pieces read.
 export async function refineSpec(
   spec: FurnitureSpec,
   instruction: string,
+  /**
+   * Notes pinned to specific points on the geometry, already formatted with
+   * the part and location they refer to. These carry far more signal than the
+   * free-text instruction, so they are presented first.
+   */
+  anchoredNotes: string[] = [],
 ): Promise<FurnitureSpec> {
   if (!hasGemini) {
     // Without a model we can still record the request; the spec is unchanged
     // and the caller surfaces that to the user.
     return spec;
   }
+
+  const notesBlock =
+    anchoredNotes.length > 0
+      ? `\nNotes pinned to specific points on the piece:\n${anchoredNotes.join('\n')}\n`
+      : '';
 
   const response = await ai().models.generateContent({
     model: env.geminiTextModel,
@@ -303,15 +314,19 @@ export async function refineSpec(
         parts: [
           {
             text: `
-Revise this furniture specification according to the requested change.
+Revise this furniture specification according to the requested changes.
 
-Change only what the request implies. Preserve every other field exactly, including
+Change only what the requests imply. Preserve every other field exactly, including
 ids, so that downstream material bindings keep working. Keep dimensions in millimetres
 and physically plausible.
 
-Requested change:
-${instruction}
+Each pinned note names the part it is attached to and where that part sits on the
+piece. Apply a note to that part specifically - do not apply it to the whole piece
+unless the note says so. If a note asks for something that would make the piece
+unbuildable or unstable, apply the closest sound alternative and say what you did in
+reconstructionNotes.
 
+${notesBlock}${instruction ? `Requested change:\n${instruction}\n` : ''}
 Current specification:
 ${JSON.stringify(spec, null, 2)}
 `.trim(),
@@ -327,4 +342,83 @@ ${JSON.stringify(spec, null, 2)}
   });
 
   return normalizeSpec(parseJson<FurnitureSpec>(response.text ?? '', 'refineSpec'));
+}
+
+/* -------------------------------------------------------------------------- */
+/* 5. Fast photoreal concept pass over a viewport capture                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Re-render a viewport capture photorealistically.
+ *
+ * This is the quick option: seconds rather than minutes, and useful as a
+ * starting point for art direction. It is NOT geometrically faithful - an
+ * image model will happily invent joinery, restyle a leg or move a seam. It
+ * must never be presented to a buyer as a representation of the product, and
+ * the UI labels it accordingly.
+ */
+export async function conceptRender(
+  capture: { bytes: Uint8Array; mimeType: string },
+  options: {
+    pieces: FurnitureSpec[];
+    brief?: string | null;
+    instruction?: string | null;
+  },
+): Promise<GeneratedImage> {
+  if (!hasGemini) throw new Error('GEMINI_API_KEY is required for concept renders');
+
+  const inventory = options.pieces
+    .map(
+      (spec) =>
+        `- ${spec.displayName} (${spec.category}): ${spec.materials
+          .map((m) => `${m.name}, ${m.finish}`)
+          .join('; ')}`,
+    )
+    .join('\n');
+
+  const prompt = `
+This is a real-time preview of a furniture manufacturer's exhibition stand. Re-render it
+as a photograph of that same stand.
+
+Hold these fixed - they are the product, not the styling:
+- The exact geometry, proportions and dimensions of every piece.
+- The exact layout: which piece is where, facing which way, at what spacing.
+- The materials and colours listed below.
+- The camera position and framing.
+
+Change only the rendering: real photographic lighting with soft shadows and accurate
+bounce, believable material response, subtle depth of field, and the surface detail a
+camera would capture - fabric weave, timber grain, the sheen of a finish.
+
+Add no furniture, props, people, text or signage that is not already in the image.
+
+Pieces on the stand:
+${inventory}
+${options.brief ? `\nProject art direction:\n${options.brief}` : ''}
+${options.instruction ? `\nAdditional direction for this render:\n${options.instruction}` : ''}
+`.trim();
+
+  const response = await ai().models.generateContent({
+    model: env.geminiImageModel,
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType: capture.mimeType, data: toBase64(capture.bytes) } },
+        ],
+      },
+    ],
+    config: { responseModalities: ['IMAGE'] },
+  });
+
+  const part = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
+  if (!part?.inlineData?.data) {
+    throw new Error('The image model returned no image');
+  }
+
+  return {
+    bytes: new Uint8Array(Buffer.from(part.inlineData.data, 'base64')),
+    mimeType: part.inlineData.mimeType ?? 'image/png',
+  };
 }

@@ -1,4 +1,6 @@
 import type {
+  Annotation,
+  AnnotationStatus,
   AssetVersion,
   FurnitureAsset,
   Job,
@@ -7,6 +9,7 @@ import type {
   Project,
   Scene,
   SceneDoc,
+  SceneRender,
   SourceImage,
   Uuid,
 } from '@/lib/types';
@@ -32,6 +35,9 @@ export interface NewScene {
   doc: SceneDoc;
   direction?: Scene['direction'];
 }
+export interface NewAnnotation
+  extends Omit<Annotation, 'id' | 'createdAt' | 'status' | 'resolvedByVersionId'> {}
+export interface NewSceneRender extends Omit<SceneRender, 'id' | 'createdAt'> {}
 export interface NewJob {
   projectId: Uuid;
   assetId?: Uuid | null;
@@ -97,6 +103,19 @@ export interface Store {
   updateJob(id: Uuid, patch: Partial<Job>): Promise<Job>;
   /** Atomically move the oldest queued job to `running` and return it. */
   claimNextJob(): Promise<Job | null>;
+
+  /* Annotations */
+  createAnnotation(input: NewAnnotation): Promise<Annotation>;
+  getAnnotation(id: Uuid): Promise<Annotation | null>;
+  /** Notes on several pieces at once - the studio shows a whole stand's worth. */
+  listAnnotations(assetIds: Uuid[], statuses?: AnnotationStatus[]): Promise<Annotation[]>;
+  updateAnnotation(id: Uuid, patch: Partial<Annotation>): Promise<Annotation>;
+  deleteAnnotation(id: Uuid): Promise<void>;
+
+  /* Rendered output */
+  createSceneRender(input: NewSceneRender): Promise<SceneRender>;
+  listSceneRenders(sceneId: Uuid): Promise<SceneRender[]>;
+  deleteSceneRender(id: Uuid): Promise<void>;
 
   /* Binary storage */
   putBlob(key: string, bytes: Uint8Array, contentType: string): Promise<string>;

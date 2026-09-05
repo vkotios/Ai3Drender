@@ -135,7 +135,11 @@ export function writeGlb(boxes: GlbBox[], materials: GlbMaterial[]): Uint8Array 
   ];
 
   const accessors: Record<string, unknown>[] = [];
-  const meshPrimitives = primitives.map((p) => {
+  // One mesh (and one node) per box, named after the component it came from.
+  // A single multi-primitive mesh would collapse every part into one object
+  // called "furniture", which loses the names that surface annotations and
+  // per-part material overrides in the studio.
+  const meshes = primitives.map((p) => {
     const positionAccessor = accessors.length;
     accessors.push({
       bufferView: 0,
@@ -163,18 +167,23 @@ export function writeGlb(boxes: GlbBox[], materials: GlbMaterial[]): Uint8Array 
       type: 'SCALAR',
     });
     return {
-      attributes: { POSITION: positionAccessor, NORMAL: normalAccessor },
-      indices: indexAccessor,
-      material: p.materialIndex,
+      name: p.name,
+      primitives: [
+        {
+          attributes: { POSITION: positionAccessor, NORMAL: normalAccessor },
+          indices: indexAccessor,
+          material: p.materialIndex,
+        },
+      ],
     };
   });
 
   const gltf = {
     asset: { version: '2.0', generator: 'ai3drender massing generator' },
     scene: 0,
-    scenes: [{ nodes: [0] }],
-    nodes: [{ mesh: 0, name: 'furniture' }],
-    meshes: [{ name: 'furniture', primitives: meshPrimitives }],
+    scenes: [{ nodes: meshes.map((_, index) => index) }],
+    nodes: meshes.map((mesh, index) => ({ mesh: index, name: mesh.name })),
+    meshes,
     materials: materials.map((m) => {
       const [r, g, b] = hexToRgb(m.baseColorHex);
       return {

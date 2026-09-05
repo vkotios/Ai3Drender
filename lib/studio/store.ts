@@ -2,11 +2,31 @@
 
 import { create } from 'zustand';
 
-import type { AssetVersion, Scene, SceneDoc, SceneNode, Uuid } from '@/lib/types';
+import type { Annotation, AssetVersion, Scene, SceneDoc, SceneNode, Uuid } from '@/lib/types';
 
 export interface LoadedVersion {
   version: AssetVersion;
   meshUrl: string | null;
+}
+
+/**
+ * What the viewport is for right now.
+ *
+ * 'layout' is the staging tool - click selects, gizmos move. 'comment' turns
+ * a click into a pinned note instead, so reviewing never risks nudging an
+ * approved layout.
+ */
+export type StudioMode = 'layout' | 'comment';
+
+/** A click in comment mode, held until the note is written or discarded. */
+export interface PendingPin {
+  nodeId: string;
+  assetId: Uuid;
+  assetVersionId: Uuid;
+  /** Asset-local space: metres, origin on the floor at the footprint centre. */
+  point: { x: number; y: number; z: number };
+  normal: { x: number; y: number; z: number };
+  partName: string | null;
 }
 
 interface StudioState {
@@ -15,12 +35,21 @@ interface StudioState {
   /** Every asset version referenced by the scene, with a fetchable mesh URL. */
   versions: Record<Uuid, LoadedVersion>;
   selectedId: string | null;
+  mode: StudioMode;
+  /** Notes on every piece staged in this scene. */
+  annotations: Annotation[];
+  pendingPin: PendingPin | null;
+  selectedAnnotationId: string | null;
   /** Set on any edit, cleared on save. Drives the "unsaved changes" affordance. */
   dirty: boolean;
   /** Suppresses OrbitControls while a transform gizmo is being dragged. */
   transforming: boolean;
 
-  load(scene: Scene, versions: LoadedVersion[]): void;
+  load(scene: Scene, versions: LoadedVersion[], annotations?: Annotation[]): void;
+  setMode(mode: StudioMode): void;
+  setPendingPin(pin: PendingPin | null): void;
+  selectAnnotation(id: string | null): void;
+  setAnnotations(annotations: Annotation[]): void;
   select(id: string | null): void;
   setTransforming(value: boolean): void;
   setDoc(doc: SceneDoc): void;
@@ -38,17 +67,31 @@ export const useStudio = create<StudioState>((set) => ({
   doc: null,
   versions: {},
   selectedId: null,
+  mode: 'layout',
+  annotations: [],
+  pendingPin: null,
+  selectedAnnotationId: null,
   dirty: false,
   transforming: false,
 
-  load: (scene, versions) =>
+  load: (scene, versions, annotations = []) =>
     set({
       scene,
       doc: scene.doc,
       versions: Object.fromEntries(versions.map((v) => [v.version.id, v])),
+      annotations,
       selectedId: null,
+      selectedAnnotationId: null,
+      pendingPin: null,
       dirty: false,
     }),
+
+  // Leaving comment mode drops a half-written pin rather than letting it
+  // reappear unexpectedly the next time the mode is entered.
+  setMode: (mode) => set({ mode, pendingPin: null }),
+  setPendingPin: (pendingPin) => set({ pendingPin }),
+  selectAnnotation: (selectedAnnotationId) => set({ selectedAnnotationId }),
+  setAnnotations: (annotations) => set({ annotations }),
 
   select: (selectedId) => set({ selectedId }),
   setTransforming: (transforming) => set({ transforming }),
