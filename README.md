@@ -56,8 +56,34 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 SUPABASE_SERVICE_ROLE_KEY=...     # server-only, used by the queue worker
 ```
 
-Apply `supabase/migrations/0001_init.sql` (schema, RLS, the `renders` storage bucket).
-Every table is reachable only through a project the caller owns.
+Apply the migrations in `supabase/migrations/` in order (schema, RLS, the `renders` storage
+bucket, then annotations and renders). Every table is reachable only through a project the
+caller owns.
+
+> **The two `NEXT_PUBLIC_` values must be set at BUILD time, not just at run time.** The server
+> reads them at runtime, but Next.js inlines them into the browser bundle when the app is
+> built. Supplying them only at run time produces a half-configured deployment: the server
+> redirects everyone to sign-in, while the sign-in form has no project to talk to. The form
+> detects this and says so rather than failing on click, but the fix is to rebuild.
+
+### Signing in
+
+With Supabase configured the app requires a user, and middleware redirects anything else to
+`/sign-in`. Two methods are offered:
+
+- **Password** — works immediately on a fresh project, including one with no SMTP configured.
+- **Email link** — no passwords to manage, but needs working email delivery. Supabase's
+  built-in sender is rate-limited hard enough that it should not be your only route in.
+
+In the Supabase dashboard, under **Authentication → URL Configuration**, set the Site URL to
+your deployment and add `<your-app>/auth/callback` to the redirect allow-list. Without that,
+email links and confirmations bounce.
+
+Whether sign-up returns a usable session immediately depends on the **Confirm email** setting;
+with it on, the form says to go and confirm rather than appearing to hang.
+
+Local-disk mode has no accounts at all — middleware never gates anything, and the header says
+so instead of showing a sign-out control that would do nothing.
 
 > **Vendors fetch images by URL.** Meshy and fal pull the synthesized views from
 > `NEXT_PUBLIC_APP_URL`, so they cannot reach a `localhost` deployment. Use Supabase Storage
@@ -163,6 +189,8 @@ Export strips helpers (grid, selection cages, gizmos) and serialises the booth a
 
 ```
 app/                     routes and API handlers
+app/sign-in, app/auth/   sign-in page, magic-link callback, sign-out
+middleware.ts            refreshes auth cookies and gates protected routes
 components/studio/       viewport, outliner, inspector
 lib/
   ai/gemini.ts           analysis, view synthesis, art direction, refinement
@@ -178,6 +206,9 @@ supabase/migrations/     schema, RLS, storage policy, annotations and renders
 
 ## Known limits
 
+- There is no team or sharing model yet: every project belongs to exactly one owner, and RLS
+  is written against `projects.owner_id`. Client review links and multi-user access both need
+  a real grant model.
 - The stub produces block massing, not reconstruction. It is for layout, not for hero renders.
 - Without `GEMINI_API_KEY`, dimensions come from category conventions and are flagged
   `rough` throughout the UI. Do not quote from them.

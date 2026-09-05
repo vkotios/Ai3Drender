@@ -4,27 +4,35 @@
  * the whole pipeline can still be exercised end to end.
  */
 
-const read = (key: string): string | null => {
-  const value = process.env[key];
-  return value && value.trim() !== '' ? value.trim() : null;
-};
+/**
+ * Next.js replaces `process.env.NEXT_PUBLIC_*` in browser bundles only where
+ * the property is accessed STATICALLY. A dynamic lookup - `process.env[key]` -
+ * is left alone, and `process.env` is an empty object in the browser, so those
+ * values would silently read as absent client-side however the app was built.
+ *
+ * Every variable is therefore named literally below. Non-public names resolve
+ * to undefined in client bundles rather than leaking, which is what we want:
+ * only the two NEXT_PUBLIC_ values are ever needed in the browser.
+ */
+const clean = (value: string | undefined): string | null =>
+  value && value.trim() !== '' ? value.trim() : null;
 
 export const env = {
-  supabaseUrl: read('NEXT_PUBLIC_SUPABASE_URL'),
-  supabaseAnonKey: read('NEXT_PUBLIC_SUPABASE_ANON_KEY'),
-  supabaseServiceKey: read('SUPABASE_SERVICE_ROLE_KEY'),
+  supabaseUrl: clean(process.env.NEXT_PUBLIC_SUPABASE_URL),
+  supabaseAnonKey: clean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
+  supabaseServiceKey: clean(process.env.SUPABASE_SERVICE_ROLE_KEY),
 
-  geminiApiKey: read('GEMINI_API_KEY'),
-  geminiTextModel: read('GEMINI_TEXT_MODEL') ?? 'gemini-2.5-flash',
-  geminiImageModel: read('GEMINI_IMAGE_MODEL') ?? 'gemini-2.5-flash-image',
+  geminiApiKey: clean(process.env.GEMINI_API_KEY),
+  geminiTextModel: clean(process.env.GEMINI_TEXT_MODEL) ?? 'gemini-2.5-flash',
+  geminiImageModel: clean(process.env.GEMINI_IMAGE_MODEL) ?? 'gemini-2.5-flash-image',
 
-  meshProvider: (read('MESH_PROVIDER') ?? 'stub').toLowerCase(),
-  meshyApiKey: read('MESHY_API_KEY'),
-  tripoApiKey: read('TRIPO_API_KEY'),
-  falApiKey: read('FAL_API_KEY'),
-  falMeshModel: read('FAL_MESH_MODEL') ?? 'fal-ai/hunyuan3d-v21',
+  meshProvider: (clean(process.env.MESH_PROVIDER) ?? 'stub').toLowerCase(),
+  meshyApiKey: clean(process.env.MESHY_API_KEY),
+  tripoApiKey: clean(process.env.TRIPO_API_KEY),
+  falApiKey: clean(process.env.FAL_API_KEY),
+  falMeshModel: clean(process.env.FAL_MESH_MODEL) ?? 'fal-ai/hunyuan3d-v21',
 
-  appUrl: read('NEXT_PUBLIC_APP_URL') ?? 'http://localhost:3000',
+  appUrl: clean(process.env.NEXT_PUBLIC_APP_URL) ?? 'http://localhost:3000',
 } as const;
 
 /** True when Supabase is configured; otherwise the on-disk LocalStore is used. */

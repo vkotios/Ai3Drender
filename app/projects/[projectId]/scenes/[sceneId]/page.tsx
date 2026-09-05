@@ -1,7 +1,8 @@
 import { notFound } from 'next/navigation';
 
 import { StudioShell } from '@/components/studio/StudioShell';
-import { getSession, requireProject } from '@/lib/db';
+import { requireProject } from '@/lib/db';
+import { requireSession } from '@/lib/auth';
 import { hasGemini } from '@/lib/env';
 import type { LoadedVersion } from '@/lib/studio/store';
 
@@ -13,8 +14,7 @@ export default async function StudioPage({
   params: Promise<{ projectId: string; sceneId: string }>;
 }) {
   const { projectId, sceneId } = await params;
-  const session = await getSession();
-  if (!session) notFound();
+  const session = await requireSession();
 
   const project = await requireProject(session, projectId);
   if (!project) notFound();
