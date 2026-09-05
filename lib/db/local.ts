@@ -1,0 +1,419 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, writeFile, rm } from 'node:fs/promises';
+import path from 'node:path';
+
+import type {
+  AssetVersion,
+  FurnitureAsset,
+  Job,
+  JobStatus,
+  Project,
+  Scene,
+  SceneDoc,
+  SourceImage,
+  Uuid,
+} from '@/lib/types';
+import type {
+  Blob,
+  NewAsset,
+  NewAssetVersion,
+  NewJob,
+  NewProject,
+  NewScene,
+  NewSourceImage,
+  Store,
+} from './store';
+
+interface Db {
+  projects: Project[];
+  sourceImages: SourceImage[];
+  assets: FurnitureAsset[];
+  assetVersions: AssetVersion[];
+  scenes: Scene[];
+  sceneVersions: { id: string; sceneId: string; versionNumber: number; doc: SceneDoc; note: string; createdAt: string }[];
+  jobs: Job[];
+}
+
+const EMPTY: Db = {
+  projects: [],
+  sourceImages: [],
+  assets: [],
+  assetVersions: [],
+  scenes: [],
+  sceneVersions: [],
+  jobs: [],
+};
+
+const ROOT = path.join(process.cwd(), 'storage-local');
+const DB_FILE = path.join(ROOT, 'db.json');
+const BLOB_DIR = path.join(ROOT, 'blobs');
+
+const now = () => new Date().toISOString();
+
+/**
+ * Development store. Everything lives in one JSON file plus a blob directory.
+ *
+ * Writes are serialised through a single in-process promise chain and land via
+ * a temp-file rename, so a crash mid-write cannot leave a truncated database.
+ * That is sufficient for a single dev server and explicitly not for production
+ * - use `SupabaseStore` there.
+ */
+export class LocalStore implements Store {
+  readonly kind = 'local' as const;
+
+  private queue: Promise<unknown> = Promise.resolve();
+
+  private async read(): Promise<Db> {
+    try {
+      const raw = await readFile(DB_FILE, 'utf8');
+      return { ...EMPTY, ...(JSON.parse(raw) as Partial<Db>) };
+    } catch {
+      return structuredClone(EMPTY);
+    }
+  }
+
+  /** Serialised read-modify-write. All mutations go through here. */
+  private mutate<T>(fn: (db: Db) => T | Promise<T>): Promise<T> {
+    const next = this.queue.then(async () => {
+      const db = await this.read();
+      const result = await fn(db);
+      await mkdir(ROOT, { recursive: true });
+      const tmp = `${DB_FILE}.${process.pid}.tmp`;
+      await writeFile(tmp, JSON.stringify(db, null, 2), 'utf8');
+      await rename(tmp, DB_FILE);
+      return result;
+    });
+    // Keep the chain alive even when a caller's callback throws.
+    this.queue = next.catch(() => undefined);
+    return next;
+  }
+
+  /* Projects --------------------------------------------------------------- */
+
+  async listProjects(ownerId: string): Promise<Project[]> {
+    const db = await this.read();
+    return db.projects
+      .filter((p) => p.ownerId === ownerId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  createProject(input: NewProject): Promise<Project> {
+    return this.mutate((db) => {
+      const project: Project = {
+        id: randomUUID(),
+        ownerId: input.ownerId,
+        name: input.name,
+        client: input.client ?? null,
+        brief: input.brief ?? null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      db.projects.push(project);
+      return project;
+    });
+  }
+
+  async getProject(id: Uuid): Promise<Project | null> {
+    const db = await this.read();
+    return db.projects.find((p) => p.id === id) ?? null;
+  }
+
+  updateProject(id: Uuid, patch: Partial<Project>): Promise<Project> {
+    return this.mutate((db) => {
+      const project = db.projects.find((p) => p.id === id);
+      if (!project) throw new Error(`project ${id} not found`);
+      Object.assign(project, patch, { updatedAt: now() });
+      return project;
+    });
+  }
+
+  deleteProject(id: Uuid): Promise<void> {
+    return this.mutate((db) => {
+      const assetIds = db.assets.filter((a) => a.projectId === id).map((a) => a.id);
+      const sceneIds = db.scenes.filter((s) => s.projectId === id).map((s) => s.id);
+      db.projects = db.projects.filter((p) => p.id !== id);
+      db.sourceImages = db.sourceImages.filter((i) => i.projectId !== id);
+      db.assets = db.assets.filter((a) => a.projectId !== id);
+      db.assetVersions = db.assetVersions.filter((v) => !assetIds.includes(v.assetId));
+      db.scenes = db.scenes.filter((s) => s.projectId !== id);
+      db.sceneVersions = db.sceneVersions.filter((v) => !sceneIds.includes(v.sceneId));
+      db.jobs = db.jobs.filter((j) => j.projectId !== id);
+    });
+  }
+
+  /* Source images ---------------------------------------------------------- */
+
+  addSourceImage(input: NewSourceImage): Promise<SourceImage> {
+    return this.mutate((db) => {
+      const image: SourceImage = { ...input, id: randomUUID(), createdAt: now() };
+      db.sourceImages.push(image);
+      return image;
+    });
+  }
+
+  async listSourceImages(projectId: Uuid): Promise<SourceImage[]> {
+    const db = await this.read();
+    return db.sourceImages
+      .filter((i) => i.projectId === projectId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async getSourceImages(ids: Uuid[]): Promise<SourceImage[]> {
+    const db = await this.read();
+    // Preserve the caller's ordering - the first image is treated as primary.
+    return ids
+      .map((id) => db.sourceImages.find((i) => i.id === id))
+      .filter((i): i is SourceImage => Boolean(i));
+  }
+
+  deleteSourceImage(id: Uuid): Promise<void> {
+    return this.mutate((db) => {
+      db.sourceImages = db.sourceImages.filter((i) => i.id !== id);
+    });
+  }
+
+  /* Assets ----------------------------------------------------------------- */
+
+  createAsset(input: NewAsset): Promise<FurnitureAsset> {
+    return this.mutate((db) => {
+      const asset: FurnitureAsset = { ...input, id: randomUUID(), createdAt: now(), updatedAt: now() };
+      db.assets.push(asset);
+      return asset;
+    });
+  }
+
+  async getAsset(id: Uuid): Promise<FurnitureAsset | null> {
+    const db = await this.read();
+    return db.assets.find((a) => a.id === id) ?? null;
+  }
+
+  async listAssets(projectId: Uuid): Promise<FurnitureAsset[]> {
+    const db = await this.read();
+    return db.assets
+      .filter((a) => a.projectId === projectId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  updateAsset(id: Uuid, patch: Partial<FurnitureAsset>): Promise<FurnitureAsset> {
+    return this.mutate((db) => {
+      const asset = db.assets.find((a) => a.id === id);
+      if (!asset) throw new Error(`asset ${id} not found`);
+      Object.assign(asset, patch, { updatedAt: now() });
+      return asset;
+    });
+  }
+
+  deleteAsset(id: Uuid): Promise<void> {
+    return this.mutate((db) => {
+      db.assets = db.assets.filter((a) => a.id !== id);
+      db.assetVersions = db.assetVersions.filter((v) => v.assetId !== id);
+    });
+  }
+
+  /* Asset versions --------------------------------------------------------- */
+
+  createAssetVersion(input: NewAssetVersion): Promise<AssetVersion> {
+    return this.mutate((db) => {
+      const version: AssetVersion = { ...input, id: randomUUID(), createdAt: now() };
+      db.assetVersions.push(version);
+      return version;
+    });
+  }
+
+  async getAssetVersion(id: Uuid): Promise<AssetVersion | null> {
+    const db = await this.read();
+    return db.assetVersions.find((v) => v.id === id) ?? null;
+  }
+
+  async listAssetVersions(assetId: Uuid): Promise<AssetVersion[]> {
+    const db = await this.read();
+    return db.assetVersions
+      .filter((v) => v.assetId === assetId)
+      .sort((a, b) => b.versionNumber - a.versionNumber);
+  }
+
+  updateAssetVersion(id: Uuid, patch: Partial<AssetVersion>): Promise<AssetVersion> {
+    return this.mutate((db) => {
+      const version = db.assetVersions.find((v) => v.id === id);
+      if (!version) throw new Error(`asset version ${id} not found`);
+      // Mirrors the Postgres trigger: accepted versions are frozen.
+      if (version.acceptedAt && patch.acceptedAt !== null) {
+        throw new Error(`asset version ${id} is accepted and immutable`);
+      }
+      Object.assign(version, patch);
+      return version;
+    });
+  }
+
+  /* Scenes ----------------------------------------------------------------- */
+
+  createScene(input: NewScene): Promise<Scene> {
+    return this.mutate((db) => {
+      const scene: Scene = {
+        id: randomUUID(),
+        projectId: input.projectId,
+        name: input.name,
+        doc: input.doc,
+        direction: input.direction ?? null,
+        acceptedAt: null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      db.scenes.push(scene);
+      db.sceneVersions.push({
+        id: randomUUID(),
+        sceneId: scene.id,
+        versionNumber: 1,
+        doc: input.doc,
+        note: 'created',
+        createdAt: now(),
+      });
+      return scene;
+    });
+  }
+
+  async getScene(id: Uuid): Promise<Scene | null> {
+    const db = await this.read();
+    return db.scenes.find((s) => s.id === id) ?? null;
+  }
+
+  async listScenes(projectId: Uuid): Promise<Scene[]> {
+    const db = await this.read();
+    return db.scenes
+      .filter((s) => s.projectId === projectId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  updateScene(id: Uuid, patch: Partial<Scene>, note = ''): Promise<Scene> {
+    return this.mutate((db) => {
+      const scene = db.scenes.find((s) => s.id === id);
+      if (!scene) throw new Error(`scene ${id} not found`);
+      Object.assign(scene, patch, { updatedAt: now() });
+      if (patch.doc) {
+        const highest = db.sceneVersions
+          .filter((v) => v.sceneId === id)
+          .reduce((max, v) => Math.max(max, v.versionNumber), 0);
+        db.sceneVersions.push({
+          id: randomUUID(),
+          sceneId: id,
+          versionNumber: highest + 1,
+          doc: patch.doc,
+          note,
+          createdAt: now(),
+        });
+      }
+      return scene;
+    });
+  }
+
+  deleteScene(id: Uuid): Promise<void> {
+    return this.mutate((db) => {
+      db.scenes = db.scenes.filter((s) => s.id !== id);
+      db.sceneVersions = db.sceneVersions.filter((v) => v.sceneId !== id);
+    });
+  }
+
+  /* Jobs ------------------------------------------------------------------- */
+
+  createJob(input: NewJob): Promise<Job> {
+    return this.mutate((db) => {
+      const job: Job = {
+        id: randomUUID(),
+        projectId: input.projectId,
+        assetId: input.assetId ?? null,
+        kind: input.kind,
+        status: 'queued',
+        progress: 0,
+        message: 'Queued',
+        error: null,
+        input: input.input ?? {},
+        output: null,
+        attempts: 0,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      db.jobs.push(job);
+      return job;
+    });
+  }
+
+  async getJob(id: Uuid): Promise<Job | null> {
+    const db = await this.read();
+    return db.jobs.find((j) => j.id === id) ?? null;
+  }
+
+  async listJobs(projectId: Uuid, statuses?: JobStatus[]): Promise<Job[]> {
+    const db = await this.read();
+    return db.jobs
+      .filter((j) => j.projectId === projectId && (!statuses || statuses.includes(j.status)))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  updateJob(id: Uuid, patch: Partial<Job>): Promise<Job> {
+    return this.mutate((db) => {
+      const job = db.jobs.find((j) => j.id === id);
+      if (!job) throw new Error(`job ${id} not found`);
+      Object.assign(job, patch, { updatedAt: now() });
+      return job;
+    });
+  }
+
+  claimNextJob(): Promise<Job | null> {
+    // The mutate() chain is the lock: no two claims can interleave in-process.
+    return this.mutate((db) => {
+      const job = db.jobs
+        .filter((j) => j.status === 'queued')
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+      if (!job) return null;
+      job.status = 'running';
+      job.attempts += 1;
+      job.message = 'Starting';
+      job.updatedAt = now();
+      return job;
+    });
+  }
+
+  /* Blobs ------------------------------------------------------------------ */
+
+  private blobPath(key: string): string {
+    // Keys are app-generated (`<project>/<kind>/<uuid>.<ext>`), but refuse to
+    // escape the blob root regardless.
+    const resolved = path.resolve(BLOB_DIR, key);
+    if (!resolved.startsWith(BLOB_DIR + path.sep)) {
+      throw new Error(`illegal blob key: ${key}`);
+    }
+    return resolved;
+  }
+
+  async putBlob(key: string, bytes: Uint8Array, contentType: string): Promise<string> {
+    const file = this.blobPath(key);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, bytes);
+    await writeFile(`${file}.type`, contentType, 'utf8');
+    return key;
+  }
+
+  async getBlob(key: string): Promise<Blob | null> {
+    try {
+      const file = this.blobPath(key);
+      const bytes = await readFile(file);
+      const contentType = await readFile(`${file}.type`, 'utf8').catch(
+        () => 'application/octet-stream',
+      );
+      return { bytes: new Uint8Array(bytes), contentType };
+    } catch {
+      return null;
+    }
+  }
+
+  async deleteBlob(key: string): Promise<void> {
+    const file = this.blobPath(key);
+    await rm(file, { force: true });
+    await rm(`${file}.type`, { force: true });
+  }
+
+  async blobUrl(key: string): Promise<string> {
+    // Served by app/api/blob/[...key]/route.ts.
+    return `/api/blob/${key.split('/').map(encodeURIComponent).join('/')}`;
+  }
+}

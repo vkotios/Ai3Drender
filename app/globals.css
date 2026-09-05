@@ -1,0 +1,89 @@
+@import 'tailwindcss';
+
+/* A workshop palette: warm neutrals, one amber accent, dark by default so the
+   3D viewport is the brightest thing on screen. */
+@theme {
+  --color-shell-950: #121110;
+  --color-shell-900: #1a1917;
+  --color-shell-850: #211f1d;
+  --color-shell-800: #292724;
+  --color-shell-700: #38352f;
+  --color-shell-600: #4d4941;
+  --color-shell-400: #8d867a;
+  --color-shell-300: #b3aca0;
+  --color-shell-100: #e9e5dd;
+  --color-amber-accent: #d99b42;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', 'Menlo', monospace;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-shell-950);
+  color: var(--color-shell-100);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Range inputs are used throughout the inspector; make them legible on dark. */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-shell-700);
+  outline: none;
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: var(--color-shell-100);
+  cursor: pointer;
+  border: none;
+}
+input[type='range']::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: var(--color-shell-100);
+  cursor: pointer;
+  border: none;
+}
+
+input[type='color'] {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+}
+input[type='color']::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+input[type='color']::-webkit-color-swatch {
+  border: 1px solid var(--color-shell-600);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-shell-700);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-shell-600);
+}
