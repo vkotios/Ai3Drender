@@ -2,7 +2,8 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { ProjectWorkbench } from '@/components/ProjectWorkbench';
-import { getSession, requireProject } from '@/lib/db';
+import { requireProject } from '@/lib/db';
+import { requireSession } from '@/lib/auth';
 import type { AssetVersion } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -13,8 +14,7 @@ export default async function ProjectPage({
   params: Promise<{ projectId: string }>;
 }) {
   const { projectId } = await params;
-  const session = await getSession();
-  if (!session) notFound();
+  const session = await requireSession();
 
   const project = await requireProject(session, projectId);
   if (!project) notFound();

@@ -1,33 +1,25 @@
 import Link from 'next/link';
 
+import { AuthStatus } from '@/components/AuthStatus';
 import { Empty, Panel } from '@/components/ui';
 import { NewProjectForm } from '@/components/NewProjectForm';
-import { getSession } from '@/lib/db';
+import { requireSession } from '@/lib/auth';
 import { hasGemini, hasSupabase, env } from '@/lib/env';
 
 export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
-  const session = await getSession();
-
-  if (!session) {
-    return (
-      <main className="mx-auto max-w-lg px-6 py-24">
-        <h1 className="text-lg font-semibold">Sign in required</h1>
-        <p className="mt-2 text-sm text-shell-400">
-          Supabase is configured, so this deployment needs an authenticated user. Sign in through
-          Supabase Auth, or unset the Supabase environment variables to run locally.
-        </p>
-      </main>
-    );
-  }
+  const session = await requireSession();
 
   const projects = await session.store.listProjects(session.viewer.id);
 
   return (
     <main className="mx-auto max-w-5xl px-6 py-12">
       <header className="mb-10">
-        <h1 className="text-2xl font-semibold tracking-tight">ai3drender</h1>
+        <div className="mb-2 flex items-start justify-between gap-4">
+          <h1 className="text-2xl font-semibold tracking-tight">ai3drender</h1>
+          <AuthStatus email={session.viewer.email} />
+        </div>
         <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-shell-400">
           Turn furniture photographs into specified, versioned 3D assets, then stage them in an
           exhibition environment and export the result as glTF, GLB or OBJ.
