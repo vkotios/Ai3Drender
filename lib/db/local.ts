@@ -60,6 +60,13 @@ const BLOB_DIR = path.join(ROOT, 'blobs');
 const now = () => new Date().toISOString();
 
 /**
+ * How long a claim is good for. Long enough that a stage polling a slow mesh
+ * vendor is not reclaimed mid-flight, since it extends the lease as it
+ * reports progress anyway.
+ */
+const DEFAULT_LEASE_MS = 5 * 60_000;
+
+/**
  * Development store. Everything lives in one JSON file plus a blob directory.
  *
  * Writes are serialised through a single in-process promise chain and land via
@@ -342,6 +349,9 @@ export class LocalStore implements Store {
         input: input.input ?? {},
         output: null,
         attempts: 0,
+        maxAttempts: input.maxAttempts ?? 3,
+        leaseExpiresAt: null,
+        nextAttemptAt: null,
         createdAt: now(),
         updatedAt: now(),
       };
@@ -371,18 +381,65 @@ export class LocalStore implements Store {
     });
   }
 
-  claimNextJob(): Promise<Job | null> {
+  claimNextJob(leaseMs = DEFAULT_LEASE_MS): Promise<Job | null> {
     // The mutate() chain is the lock: no two claims can interleave in-process.
     return this.mutate((db) => {
+      const at = Date.now();
       const job = db.jobs
-        .filter((j) => j.status === 'queued')
+        .filter(
+          (j) =>
+            j.status === 'queued' &&
+            // A job backing off after a failure is not yet claimable.
+            (!j.nextAttemptAt || Date.parse(j.nextAttemptAt) <= at),
+        )
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
       if (!job) return null;
+
       job.status = 'running';
       job.attempts += 1;
-      job.message = 'Starting';
+      job.message = job.attempts > 1 ? `Retrying (attempt ${job.attempts})` : 'Starting';
+      job.leaseExpiresAt = new Date(at + leaseMs).toISOString();
+      job.nextAttemptAt = null;
       job.updatedAt = now();
       return job;
+    });
+  }
+
+  extendLease(id: Uuid, leaseMs: number): Promise<void> {
+    return this.mutate((db) => {
+      const job = db.jobs.find((j) => j.id === id);
+      // Only the holder of a live claim may extend it. A job reclaimed out
+      // from under a stalled worker must not be pulled back.
+      if (!job || job.status !== 'running') return;
+      job.leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+    });
+  }
+
+  reclaimExpiredJobs(): Promise<number> {
+    return this.mutate((db) => {
+      const at = Date.now();
+      let reclaimed = 0;
+
+      for (const job of db.jobs) {
+        if (job.status !== 'running') continue;
+        if (!job.leaseExpiresAt || Date.parse(job.leaseExpiresAt) > at) continue;
+
+        reclaimed += 1;
+        job.leaseExpiresAt = null;
+        job.updatedAt = now();
+
+        if (job.attempts >= job.maxAttempts) {
+          job.status = 'failed';
+          job.message = 'Failed';
+          job.error = `Abandoned by a worker after ${job.attempts} attempt(s)`;
+        } else {
+          job.status = 'queued';
+          job.message = 'Queued after a worker stopped responding';
+          // Straight back in the queue: the lease already provided the delay.
+          job.nextAttemptAt = null;
+        }
+      }
+      return reclaimed;
     });
   }
 

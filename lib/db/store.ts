@@ -45,6 +45,8 @@ export interface NewJob {
   assetId?: Uuid | null;
   kind: JobKind;
   input?: Record<string, unknown>;
+  /** Defaults to 3. Set to 1 for work that must never be repeated. */
+  maxAttempts?: number;
 }
 
 /**
@@ -103,8 +105,22 @@ export interface Store {
   getJob(id: Uuid): Promise<Job | null>;
   listJobs(projectId: Uuid, statuses?: JobStatus[]): Promise<Job[]>;
   updateJob(id: Uuid, patch: Partial<Job>): Promise<Job>;
-  /** Atomically move the oldest queued job to `running` and return it. */
-  claimNextJob(): Promise<Job | null>;
+  /**
+   * Atomically claim the oldest eligible queued job.
+   *
+   * Eligible means queued and past its `nextAttemptAt`, if it has one. The
+   * claim takes a lease for `leaseMs`; whoever holds it must finish or extend
+   * it before it lapses.
+   */
+  claimNextJob(leaseMs?: number): Promise<Job | null>;
+  /** Push the current claim's deadline out. Called while a stage makes progress. */
+  extendLease(id: Uuid, leaseMs: number): Promise<void>;
+  /**
+   * Return jobs whose lease has lapsed to the queue, counting the lost attempt.
+   * Jobs already at their attempt limit are failed instead. Returns how many
+   * rows were touched.
+   */
+  reclaimExpiredJobs(): Promise<number>;
 
   /* Annotations */
   createAnnotation(input: NewAnnotation): Promise<Annotation>;
