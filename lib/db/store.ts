@@ -26,18 +26,20 @@ export interface NewProject {
   brief?: string | null;
 }
 
-export interface NewSourceImage extends Omit<SourceImage, 'id' | 'createdAt'> {}
-export interface NewAsset extends Omit<FurnitureAsset, 'id' | 'createdAt' | 'updatedAt'> {}
-export interface NewAssetVersion extends Omit<AssetVersion, 'id' | 'createdAt'> {}
+export type NewSourceImage = Omit<SourceImage, 'id' | 'createdAt'>;
+export type NewAsset = Omit<FurnitureAsset, 'id' | 'createdAt' | 'updatedAt'>;
+export type NewAssetVersion = Omit<AssetVersion, 'id' | 'createdAt'>;
 export interface NewScene {
   projectId: Uuid;
   name: string;
   doc: SceneDoc;
   direction?: Scene['direction'];
 }
-export interface NewAnnotation
-  extends Omit<Annotation, 'id' | 'createdAt' | 'status' | 'resolvedByVersionId'> {}
-export interface NewSceneRender extends Omit<SceneRender, 'id' | 'createdAt'> {}
+export type NewAnnotation = Omit<
+  Annotation,
+  'id' | 'createdAt' | 'status' | 'resolvedByVersionId'
+>;
+export type NewSceneRender = Omit<SceneRender, 'id' | 'createdAt'>;
 export interface NewJob {
   projectId: Uuid;
   assetId?: Uuid | null;

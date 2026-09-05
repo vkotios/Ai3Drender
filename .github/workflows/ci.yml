@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref makes an in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck, lint and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # Deliberately built with no secrets: the app is designed to boot on an
+      # empty environment (local disk store, offline analyzer, stub mesh
+      # provider). Needing a key to build would be a regression, and this step
+      # is what would catch it.
+      - name: Build
+        run: npm run build
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Gated at critical rather than high on purpose. Two high advisories
+      # (postcss and sharp, both transitive via next) have no fix below a
+      # semver-major move to Next 16 and are tracked in #18. Gating at high
+      # would leave CI permanently red, which trains people to ignore it.
+      - name: Fail on critical advisories
+        run: npm audit --audit-level=critical
+
+      # Informational: surfaces the moderate and high findings in the log
+      # without blocking the run.
+      - name: Report all advisories
+        if: always()
+        run: npm audit || true
