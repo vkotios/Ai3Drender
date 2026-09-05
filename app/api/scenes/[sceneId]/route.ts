@@ -20,7 +20,15 @@ export async function GET(_request: Request, { params }: Params) {
         meshUrl: version.meshPath ? await store.blobUrl(version.meshPath) : null,
       });
     }
-    return json({ scene, versions });
+    // The studio needs every note on every staged piece, plus any renders
+    // already produced for this stand.
+    const assetIds = [...new Set(versions.map((v) => v.version.assetId))];
+    return json({
+      scene,
+      versions,
+      annotations: await store.listAnnotations(assetIds),
+      renders: await store.listSceneRenders(scene.id),
+    });
   });
 }
 

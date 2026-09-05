@@ -1,10 +1,12 @@
 'use client';
 
-import { useGLTF } from '@react-three/drei';
-import { useMemo } from 'react';
+import { Html, useGLTF } from '@react-three/drei';
+import { useMemo, useRef } from 'react';
+import type { ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 
-import type { AssetVersion, SceneNode } from '@/lib/types';
+import type { Annotation, AssetVersion, SceneNode } from '@/lib/types';
+import type { PendingPin, StudioMode } from '@/lib/studio/store';
 
 /**
  * One reconstructed furniture piece in the scene.
@@ -18,15 +20,28 @@ export function AssetNode({
   version,
   meshUrl,
   selected,
+  mode,
+  annotations,
+  pendingPin,
+  selectedAnnotationId,
   onSelect,
+  onPin,
+  onSelectAnnotation,
 }: {
   node: SceneNode;
   version: AssetVersion;
   meshUrl: string;
   selected: boolean;
+  mode: StudioMode;
+  annotations: Annotation[];
+  pendingPin: PendingPin | null;
+  selectedAnnotationId: string | null;
   onSelect: () => void;
+  onPin: (pin: Omit<PendingPin, 'nodeId' | 'assetId' | 'assetVersionId'>) => void;
+  onSelectAnnotation: (id: string) => void;
 }) {
   const { scene } = useGLTF(meshUrl);
+  const groupRef = useRef<THREE.Group>(null);
 
   const prepared = useMemo(() => {
     // Clone so several nodes can reference the same version, and so material
@@ -81,23 +96,137 @@ export function AssetNode({
     });
   }, [prepared.root, node.materialOverrides]);
 
+  /**
+   * A click either selects the piece or pins a note to the exact spot.
+   *
+   * The anchor is converted into THIS group's local space, which is the frame
+   * the inner group's offset and fit map the raw mesh into: metres, origin on
+   * the floor at the footprint centre. Storing it there means the note stays
+   * put when the piece is moved, rotated or restaged, and stays meaningful if
+   * the mesh is later rebuilt at a different vendor scale.
+   */
+  const handleClick = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation();
+
+    if (mode !== 'comment') {
+      onSelect();
+      return;
+    }
+
+    const group = groupRef.current;
+    if (!group) return;
+
+    const point = group.worldToLocal(event.point.clone());
+
+    const worldNormal = event.face
+      ? event.face.normal.clone().transformDirection(event.object.matrixWorld)
+      : new THREE.Vector3(0, 1, 0);
+    const normal = worldNormal
+      .applyQuaternion(group.getWorldQuaternion(new THREE.Quaternion()).invert())
+      .normalize();
+
+    onPin({
+      point: { x: point.x, y: point.y, z: point.z },
+      normal: { x: normal.x, y: normal.y, z: normal.z },
+      // Our massing meshes name each part after its component; vendor meshes
+      // may not, in which case the server falls back to a positional description.
+      partName: event.object.name || null,
+    });
+  };
+
   if (!node.visible) return null;
 
   return (
     <group
+      ref={groupRef}
       position={[node.transform.position.x, node.transform.position.y, node.transform.position.z]}
       rotation={[node.transform.rotation.x, node.transform.rotation.y, node.transform.rotation.z]}
       scale={[node.transform.scale.x, node.transform.scale.y, node.transform.scale.z]}
-      onClick={(event) => {
-        event.stopPropagation();
-        onSelect();
-      }}
+      onClick={handleClick}
       userData={{ nodeId: node.id, exportable: true }}
     >
       <group position={prepared.offset} scale={prepared.fit}>
         <primitive object={prepared.root} />
       </group>
-      {selected && <SelectionBox object={prepared.root} scale={prepared.fit} offset={prepared.offset} />}
+      {selected && mode === 'layout' && (
+        <SelectionBox object={prepared.root} scale={prepared.fit} offset={prepared.offset} />
+      )}
+
+      {annotations.map((annotation, index) => (
+        <Pin
+          key={annotation.id}
+          position={[annotation.point.x, annotation.point.y, annotation.point.z]}
+          label={String(index + 1)}
+          status={annotation.status}
+          active={annotation.id === selectedAnnotationId}
+          onClick={() => onSelectAnnotation(annotation.id)}
+        />
+      ))}
+
+      {pendingPin && pendingPin.nodeId === node.id && (
+        <Pin
+          position={[pendingPin.point.x, pendingPin.point.y, pendingPin.point.z]}
+          label="+"
+          status="open"
+          active
+          pending
+        />
+      )}
+    </group>
+  );
+}
+
+const PIN_COLORS = {
+  open: '#d99b42',
+  applied: '#4ba26a',
+  dismissed: '#6b6660',
+} as const;
+
+/**
+ * A pinned note in the viewport.
+ *
+ * The badge is drei <Html>, so it is real DOM rather than canvas content -
+ * which also means pins never appear in a captured or path-traced render.
+ */
+function Pin({
+  position,
+  label,
+  status,
+  active,
+  pending = false,
+  onClick,
+}: {
+  position: [number, number, number];
+  label: string;
+  status: 'open' | 'applied' | 'dismissed';
+  active: boolean;
+  pending?: boolean;
+  onClick?: () => void;
+}) {
+  const color = PIN_COLORS[status];
+  return (
+    <group position={position} userData={{ helper: true }}>
+      <mesh raycast={pending ? () => null : undefined} onClick={onClick && ((e) => { e.stopPropagation(); onClick(); })}>
+        <sphereGeometry args={[active ? 0.045 : 0.032, 16, 16]} />
+        <meshBasicMaterial color={color} depthTest={false} transparent opacity={0.95} />
+      </mesh>
+      <Html center distanceFactor={6} zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
+        <span
+          style={{
+            background: color,
+            color: '#1a1917',
+            borderRadius: 999,
+            padding: '1px 6px',
+            fontSize: 11,
+            fontWeight: 700,
+            fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+            whiteSpace: 'nowrap',
+            boxShadow: active ? '0 0 0 2px #e9e5dd' : 'none',
+          }}
+        >
+          {label}
+        </span>
+      </Html>
     </group>
   );
 }

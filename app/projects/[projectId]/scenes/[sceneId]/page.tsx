@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation';
 
 import { StudioShell } from '@/components/studio/StudioShell';
 import { getSession, requireProject } from '@/lib/db';
+import { hasGemini } from '@/lib/env';
 import type { LoadedVersion } from '@/lib/studio/store';
 
 export const dynamic = 'force-dynamic';
@@ -49,7 +50,26 @@ export default async function StudioPage({
     versions.push({ version, meshUrl: await store.blobUrl(version.meshPath) });
   }
 
+  const annotations = await store.listAnnotations([
+    ...new Set([...available, ...versions].map((v) => v.version.assetId)),
+  ]);
+
+  const renders = await Promise.all(
+    (await store.listSceneRenders(scene.id)).map(async (render) => ({
+      ...render,
+      url: await store.blobUrl(render.path),
+    })),
+  );
+
   return (
-    <StudioShell project={project} scene={scene} versions={versions} available={available} />
+    <StudioShell
+      project={project}
+      scene={scene}
+      versions={versions}
+      available={available}
+      annotations={annotations}
+      initialRenders={renders}
+      conceptAvailable={hasGemini}
+    />
   );
 }

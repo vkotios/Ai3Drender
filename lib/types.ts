@@ -166,6 +166,8 @@ export interface SynthesizedView {
  */
 export interface RefinementRequest {
   instruction: string;
+  /** Anchored notes this refinement is answering, resolved at enqueue time. */
+  annotationIds?: Uuid[];
   /** Targeted overrides applied without re-running reconstruction. */
   specOverrides?: Partial<Pick<FurnitureSpec, 'dimensions' | 'materials' | 'displayName'>>;
   /** When true the mesh is rebuilt; otherwise only the spec/materials change. */
@@ -189,7 +191,6 @@ export interface AssetVersion {
   meshPath: string | null;
   /** Longest-axis size of the raw mesh, used to scale it to real-world mm. */
   meshExtentMm: number | null;
-  previewPath: string | null;
   provider: string;
   providerJobId: string | null;
   refinement: RefinementRequest | null;
@@ -308,7 +309,13 @@ export interface SceneDirection {
 /* Pipeline jobs                                                              */
 /* -------------------------------------------------------------------------- */
 
-export type JobKind = 'analyze' | 'synthesize_views' | 'reconstruct' | 'refine' | 'direct_scene';
+export type JobKind =
+  | 'analyze'
+  | 'synthesize_views'
+  | 'reconstruct'
+  | 'refine'
+  | 'direct_scene'
+  | 'concept_render';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 
@@ -328,4 +335,76 @@ export interface Job {
   attempts: number;
   createdAt: IsoDate;
   updatedAt: IsoDate;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Anchored annotations                                                       */
+/* -------------------------------------------------------------------------- */
+
+export type AnnotationStatus = 'open' | 'applied' | 'dismissed';
+
+/**
+ * A note pinned to a point on a piece's geometry.
+ *
+ * This is the review loop a workshop actually runs on: someone points at the
+ * thing and says what is wrong with it. Anchoring the note to geometry rather
+ * than leaving it as free text is what lets the model act on it precisely -
+ * "slim this down" is useless, "slim the front-left leg, 180mm above the
+ * floor, currently 70mm square" is actionable.
+ *
+ * The anchor is stored in the ASSET's local space, not world space, so a note
+ * survives the piece being moved, rotated or restaged in another booth.
+ */
+export interface Annotation {
+  id: Uuid;
+  assetId: Uuid;
+  /** The version the note was made against. */
+  assetVersionId: Uuid;
+  /** Scene the note was taken in, for traceability. Null if made elsewhere. */
+  sceneId: Uuid | null;
+  /** Anchor in the asset's local space, metres. */
+  point: Vec3;
+  /** Surface normal at the anchor, for orienting the marker. */
+  normal: Vec3;
+  /** Mesh part under the cursor, e.g. "Legs 3". Null on unnamed vendor meshes. */
+  partName: string | null;
+  /** Spec component the part maps to, when it can be resolved. */
+  componentName: string | null;
+  componentRole: string | null;
+  /**
+   * Where the note sits on the piece in plain language, e.g.
+   * "front-left, 180 mm above the floor". Always derivable, even when the
+   * mesh carries no part names, so the model is never left without location.
+   */
+  anchorDescription: string;
+  body: string;
+  status: AnnotationStatus;
+  /** The version created in response to this note. */
+  resolvedByVersionId: Uuid | null;
+  createdAt: IsoDate;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Rendered output                                                            */
+/* -------------------------------------------------------------------------- */
+
+export type SceneRenderKind =
+  /** Progressively path-traced in the browser. Geometrically faithful. */
+  | 'pathtraced'
+  /** Image-model pass over a viewport capture. Fast, NOT spec-accurate. */
+  | 'concept';
+
+export interface SceneRender {
+  id: Uuid;
+  sceneId: Uuid;
+  projectId: Uuid;
+  kind: SceneRenderKind;
+  path: string;
+  width: number;
+  height: number;
+  /** Samples accumulated, for path-traced renders. */
+  samples: number | null;
+  /** The instruction given to the image model, for concept renders. */
+  prompt: string | null;
+  createdAt: IsoDate;
 }

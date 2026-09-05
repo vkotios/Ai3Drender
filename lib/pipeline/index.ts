@@ -1,9 +1,17 @@
 import { randomUUID } from 'node:crypto';
 
-import { analyzeFurniture, directScene, refineSpec, synthesizeViews, type ImageInput } from '@/lib/ai/gemini';
+import {
+  analyzeFurniture,
+  conceptRender,
+  directScene,
+  refineSpec,
+  synthesizeViews,
+  type ImageInput,
+} from '@/lib/ai/gemini';
 import { getMeshProvider } from '@/lib/ai/mesh';
 import type { Store } from '@/lib/db';
 import { env } from '@/lib/env';
+import { formatAnnotationForPrompt } from '@/lib/scene/anchor';
 import type { AssetVersion, Job, RefinementRequest, SourceImage, SynthesizedView } from '@/lib/types';
 
 /**
@@ -27,6 +35,8 @@ const key = {
   source: (projectId: string, ext: string) => `${projectId}/sources/${randomUUID()}.${ext}`,
   view: (projectId: string, versionId: string, angle: string) =>
     `${projectId}/views/${versionId}/${angle}.png`,
+  render: (projectId: string, sceneId: string, kind: string, ext: string) =>
+    `${projectId}/renders/${sceneId}/${kind}-${randomUUID()}.${ext}`,
   mesh: (projectId: string, versionId: string) => `${projectId}/meshes/${versionId}.glb`,
 };
 
@@ -93,7 +103,6 @@ async function runAnalyze(ctx: StageContext): Promise<Record<string, unknown>> {
       .map<SynthesizedView>((i) => ({ angle: i.role, path: i.path, fromSource: true })),
     meshPath: null,
     meshExtentMm: null,
-    previewPath: null,
     provider: getMeshProvider().name,
     providerJobId: null,
     refinement: null,
@@ -217,8 +226,41 @@ async function runRefine(ctx: StageContext): Promise<Record<string, unknown>> {
   const asset = await store.getAsset(parent.assetId);
   if (!asset) throw new Error('refine: asset not found');
 
-  await ctx.report(0.2, 'Applying requested changes to the specification');
-  let spec = await refineSpec(parent.spec, request.instruction);
+  // Anchored notes are the substance of a review round; the free-text
+  // instruction is often just "apply these".
+  const annotations = request.annotationIds?.length
+    ? (await store.listAnnotations([asset.id])).filter((a) =>
+        request.annotationIds!.includes(a.id),
+      )
+    : [];
+
+  await ctx.report(
+    0.2,
+    annotations.length > 0
+      ? `Applying ${annotations.length} pinned note${annotations.length === 1 ? '' : 's'}`
+      : 'Applying requested changes to the specification',
+  );
+
+  let spec = await refineSpec(
+    parent.spec,
+    request.instruction,
+    annotations.map(formatAnnotationForPrompt),
+  );
+
+  // Carry the notes into reconstruction too, so a rebuilt mesh reflects them
+  // rather than only the specification doing so.
+  if (request.rebuildMesh && annotations.length > 0) {
+    spec = {
+      ...spec,
+      reconstructionNotes: [
+        spec.reconstructionNotes,
+        'Requested corrections:',
+        ...annotations.map(formatAnnotationForPrompt),
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    };
+  }
 
   // Explicit overrides win over the model's interpretation.
   if (request.specOverrides) {
@@ -234,19 +276,27 @@ async function runRefine(ctx: StageContext): Promise<Record<string, unknown>> {
   const version: AssetVersion = await store.createAssetVersion({
     assetId: asset.id,
     versionNumber: await nextVersionNumber(store, asset.id),
-    label: request.instruction.slice(0, 120),
+    label: describeRefinement(request.instruction, annotations),
     parentVersionId: parent.id,
     spec,
     // Carry the parent's views over; they still depict the same piece.
     views: parent.views,
     meshPath: request.rebuildMesh ? null : parent.meshPath,
     meshExtentMm: request.rebuildMesh ? null : parent.meshExtentMm,
-    previewPath: null,
     provider: parent.provider,
     providerJobId: null,
     refinement: request,
     acceptedAt: null,
   });
+
+  // Close the loop: the notes this version answers are no longer open, and
+  // point at the version that answered them.
+  for (const annotation of annotations) {
+    await store.updateAnnotation(annotation.id, {
+      status: 'applied',
+      resolvedByVersionId: version.id,
+    });
+  }
 
   if (request.rebuildMesh) {
     await store.updateAsset(asset.id, { status: 'reconstructing' });
@@ -261,7 +311,30 @@ async function runRefine(ctx: StageContext): Promise<Record<string, unknown>> {
     await store.updateAsset(asset.id, { status: 'ready', currentVersionId: version.id });
   }
 
-  return { versionId: version.id, rebuildMesh: request.rebuildMesh };
+  return {
+    versionId: version.id,
+    rebuildMesh: request.rebuildMesh,
+    annotationsApplied: annotations.length,
+  };
+}
+
+/**
+ * Name a version after what produced it. A revision driven purely by pinned
+ * notes carries no written instruction, so fall back to the notes themselves
+ * rather than leaving the version history blank.
+ */
+function describeRefinement(
+  instruction: string,
+  annotations: { body: string; componentName: string | null; partName: string | null }[],
+): string {
+  if (instruction.trim()) return instruction.trim().slice(0, 120);
+  if (annotations.length === 0) return 'Refined';
+  if (annotations.length === 1) {
+    const [note] = annotations;
+    const part = note.componentName ?? note.partName;
+    return `${part ? `${part}: ` : ''}${note.body}`.slice(0, 120);
+  }
+  return `${annotations.length} pinned notes`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -310,6 +383,62 @@ async function runDirectScene(ctx: StageContext): Promise<Record<string, unknown
 }
 
 /* -------------------------------------------------------------------------- */
+/* Stage 6: fast concept render over a viewport capture                       */
+/* -------------------------------------------------------------------------- */
+
+async function runConceptRender(ctx: StageContext): Promise<Record<string, unknown>> {
+  const { store, job } = ctx;
+  const sceneId = job.input.sceneId as string;
+  const capturePath = job.input.capturePath as string;
+  const instruction = (job.input.instruction as string | undefined) ?? null;
+
+  const scene = await store.getScene(sceneId);
+  if (!scene) throw new Error(`concept_render: scene ${sceneId} not found`);
+  const project = await store.getProject(scene.projectId);
+
+  await ctx.report(0.15, 'Loading viewport capture');
+  const capture = await store.getBlob(capturePath);
+  if (!capture) throw new Error('concept_render: the viewport capture is missing');
+
+  // Only the pieces actually staged in this scene inform the prompt.
+  const stagedVersionIds = [
+    ...new Set(scene.doc.nodes.map((n) => n.assetVersionId).filter((id): id is string => !!id)),
+  ];
+  const pieces = [];
+  for (const id of stagedVersionIds) {
+    const version = await store.getAssetVersion(id);
+    if (version) pieces.push(version.spec);
+  }
+
+  await ctx.report(0.4, 'Rendering concept');
+  const image = await conceptRender(
+    { bytes: capture.bytes, mimeType: capture.contentType },
+    { pieces, brief: project?.brief ?? null, instruction },
+  );
+
+  await ctx.report(0.85, 'Storing render');
+  const extension = image.mimeType.includes('jpeg') ? 'jpg' : 'png';
+  const path = key.render(scene.projectId, scene.id, 'concept', extension);
+  await store.putBlob(path, image.bytes, image.mimeType);
+
+  const render = await store.createSceneRender({
+    sceneId: scene.id,
+    projectId: scene.projectId,
+    kind: 'concept',
+    path,
+    width: (job.input.width as number) ?? 0,
+    height: (job.input.height as number) ?? 0,
+    samples: null,
+    prompt: instruction,
+  });
+
+  // The capture was only ever an input; do not leave it in storage.
+  await store.deleteBlob(capturePath).catch(() => undefined);
+
+  return { renderId: render.id, path };
+}
+
+/* -------------------------------------------------------------------------- */
 /* Dispatch                                                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -319,6 +448,7 @@ const STAGES: Record<Job['kind'], (ctx: StageContext) => Promise<Record<string, 
   reconstruct: runReconstruct,
   refine: runRefine,
   direct_scene: runDirectScene,
+  concept_render: runConceptRender,
 };
 
 /** Run one claimed job to completion, recording progress and failure. */

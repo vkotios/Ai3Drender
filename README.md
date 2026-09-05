@@ -71,15 +71,63 @@ Every table is reachable only through a project the caller owns.
 ```
 photos ──▶ analyze ──▶ synthesize_views ──▶ reconstruct ──▶ AssetVersion (.glb)
                                                                   │
-                                              refine ◀────────────┘
+                            pinned notes ──▶ refine ◀─────────────┘
                                                  │
-                                      staged in a SceneDoc ──▶ glTF / GLB / OBJ
+                                      staged in a SceneDoc ──┬─▶ glTF / GLB / OBJ
+                                                             ├─▶ path-traced PNG
+                                                             └─▶ concept PNG
 ```
 
 Each stage is a row in `jobs` that enqueues the next, so progress is visible and a failure
 retries from the stage that broke rather than from the photographs again. The app drains its
 own queue via `POST /api/jobs/tick` while work is outstanding; run `npm run worker` alongside
 for a standalone drainer. Claims are atomic, so several drainers can run at once.
+
+### Reviewing by pointing at things
+
+The studio has two modes. **Layout** stages the stand. **Comment** turns a click into a note
+pinned to that exact spot on the piece — the review loop a workshop actually runs, where
+someone points at the thing and says what is wrong with it.
+
+Anchoring the note to geometry is what makes it actionable. The server resolves each pin to
+the mesh part it landed on, maps that back to a spec component, and derives a plain-language
+location, so the model receives:
+
+```
+- on the Legs (front-left, 180 mm above the floor): slim these to 40mm square
+```
+
+rather than "make the legs thinner". Notes are stored in the **asset's** local space, not the
+scene's, so they survive the piece being moved, rotated or restaged in another booth — and
+stay meaningful if the mesh is later rebuilt at a different vendor scale.
+
+Open notes on one piece are applied as a single revision round, producing one new version
+that answers all of them. Each note is then marked applied and linked to the version that
+resolved it. Choosing **Apply & rebuild mesh** also appends the notes to the reconstruction
+prompt, so a rebuilt mesh reflects them too — not just the specification.
+
+Gizmos are hidden in Comment mode, so reviewing can never nudge an approved layout.
+
+### Rendering
+
+Two ways out of the viewport, with deliberately different trust levels:
+
+| | Path-traced | Quick concept |
+|---|---|---|
+| What | Progressive path tracing of the real scene, in-browser | Image model repaints a viewport capture |
+| Time | Seconds to minutes, converges as it goes | A few seconds |
+| Faithful? | **Yes** — real geometry, real light transport | **No** — it will invent detail |
+| Use for | Anything a buyer sees | A starting base for art direction |
+
+The path tracer takes over the render loop while active and restarts accumulation whenever
+the camera moves, so you frame the shot roughly and leave it to converge. Every operator aid —
+grid, selection cages, pins, gizmo, the faked contact shadows — is suppressed while it runs, so
+nothing gets baked in. If the HDRI failed to load there would be nothing lighting the scene, so
+a gradient built from the booth's own colours stands in rather than rendering black.
+
+The concept pass is labelled as non-faithful everywhere it appears, and the button explains
+itself when `GEMINI_API_KEY` is unset rather than failing on click. Saved frames of both kinds
+are listed in the panel.
 
 ### Create, modify, refine
 
@@ -122,9 +170,10 @@ lib/
   ai/mesh/               MeshProvider port, vendor adapters, GLB writer, massing generator
   db/                    Store port; Supabase and local-disk implementations
   pipeline/              job stages and the runner
-  scene/                 booth presets, scene document defaults
+  scene/                 booth presets, scene defaults, anchor resolution
   studio/                client store and exporters
-supabase/migrations/     schema, RLS, storage policy
+components/studio/       viewport, outliner, inspector, annotations, render panel
+supabase/migrations/     schema, RLS, storage policy, annotations and renders
 ```
 
 ## Known limits
@@ -132,5 +181,11 @@ supabase/migrations/     schema, RLS, storage policy
 - The stub produces block massing, not reconstruction. It is for layout, not for hero renders.
 - Without `GEMINI_API_KEY`, dimensions come from category conventions and are flagged
   `rough` throughout the UI. Do not quote from them.
-- The studio renders in real time in the browser. It is not a path-traced offline renderer —
-  for final print imagery, export the GLB and render it in your DCC of choice.
+- Path tracing runs on the viewer's GPU. It converges in seconds on a discrete GPU and is
+  painfully slow on software rendering; drop the resolution scale on weaker machines. For
+  print-resolution stills, export the GLB and render it offline in your DCC of choice.
+- Concept renders are not a record of the product. They are labelled as such in the UI, and
+  that labelling should survive any redesign of it.
+- Notes resolve to a named part only when the mesh carries part names. Our own meshes do;
+  a vendor mesh that arrives as one merged object falls back to the positional description
+  alone, which is still enough for the model to act on.

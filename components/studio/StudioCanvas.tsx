@@ -11,9 +11,19 @@ import type { SceneDoc } from '@/lib/types';
 import { AssetNode } from './AssetNode';
 import { Booth } from './Booth';
 import { Lighting } from './Lighting';
+import { PathTracer } from './PathTracer';
 import { PropNode } from './PropNode';
 
 export type GizmoMode = 'translate' | 'rotate' | 'scale';
+
+/** 'preview' is the real-time viewport; 'pathtrace' converges a final frame. */
+export type RenderMode = 'preview' | 'pathtrace';
+
+export interface RenderSettings {
+  bounces: number;
+  maxSamples: number;
+  resolutionScale: number;
+}
 
 /**
  * The viewport.
@@ -25,11 +35,19 @@ export type GizmoMode = 'translate' | 'rotate' | 'scale';
 export function StudioCanvas({
   doc,
   gizmoMode,
+  renderMode,
+  renderSettings,
+  onSamples,
   onExportRootReady,
+  onCanvasReady,
 }: {
   doc: SceneDoc;
   gizmoMode: GizmoMode;
+  renderMode: RenderMode;
+  renderSettings: RenderSettings;
+  onSamples: (samples: number, converged: boolean) => void;
   onExportRootReady: (root: THREE.Group | null) => void;
+  onCanvasReady: (canvas: HTMLCanvasElement | null) => void;
 }) {
   const { camera, environment, nodes } = doc;
 
@@ -49,9 +67,17 @@ export function StudioCanvas({
       <color attach="background" args={[environment.backgroundColorHex]} />
       <Suspense fallback={null}>
         <Lighting environment={environment} lightNodes={nodes.filter((n) => n.kind === 'light')} />
-        <SceneContents doc={doc} gizmoMode={gizmoMode} onExportRootReady={onExportRootReady} />
+        <SceneContents
+          doc={doc}
+          gizmoMode={gizmoMode}
+          renderMode={renderMode}
+          renderSettings={renderSettings}
+          onSamples={onSamples}
+          onExportRootReady={onExportRootReady}
+        />
       </Suspense>
       <CameraSync doc={doc} />
+      <CanvasHandle onReady={onCanvasReady} />
     </Canvas>
   );
 }
@@ -59,12 +85,22 @@ export function StudioCanvas({
 function SceneContents({
   doc,
   gizmoMode,
+  renderMode,
+  renderSettings,
+  onSamples,
   onExportRootReady,
 }: {
   doc: SceneDoc;
   gizmoMode: GizmoMode;
+  renderMode: RenderMode;
+  renderSettings: RenderSettings;
+  onSamples: (samples: number, converged: boolean) => void;
   onExportRootReady: (root: THREE.Group | null) => void;
 }) {
+  // While a frame is converging, everything that exists to help the operator -
+  // grid, selection cages, pins, gizmo, the faked contact shadows - has to go,
+  // or it ends up baked into the render.
+  const presenting = renderMode === 'pathtrace';
   const rootRef = useRef<THREE.Group>(null);
   const versions = useStudio((s) => s.versions);
   const selectedId = useStudio((s) => s.selectedId);
@@ -72,6 +108,12 @@ function SceneContents({
   const patchNode = useStudio((s) => s.patchNode);
   const transforming = useStudio((s) => s.transforming);
   const setTransforming = useStudio((s) => s.setTransforming);
+  const mode = useStudio((s) => s.mode);
+  const annotations = useStudio((s) => s.annotations);
+  const pendingPin = useStudio((s) => s.pendingPin);
+  const setPendingPin = useStudio((s) => s.setPendingPin);
+  const selectedAnnotationId = useStudio((s) => s.selectedAnnotationId);
+  const selectAnnotation = useStudio((s) => s.selectAnnotation);
 
   const [selectedObject, setSelectedObject] = useState<THREE.Object3D | null>(null);
 
@@ -99,7 +141,7 @@ function SceneContents({
   return (
     <>
       <group ref={rootRef} name="scene-root">
-        <Booth environment={doc.environment} />
+        <Booth environment={doc.environment} showGrid={!presenting} />
 
         {doc.nodes.map((node) => {
           if (node.kind === 'asset' && node.assetVersionId) {
@@ -111,8 +153,27 @@ function SceneContents({
                 node={node}
                 version={loaded.version}
                 meshUrl={loaded.meshUrl}
-                selected={node.id === selectedId}
+                selected={!presenting && node.id === selectedId}
+                mode={mode}
+                annotations={
+                  presenting
+                    ? []
+                    : annotations.filter(
+                        (a) => a.assetId === loaded.version.assetId && a.status !== 'dismissed',
+                      )
+                }
+                pendingPin={presenting ? null : pendingPin}
+                selectedAnnotationId={selectedAnnotationId}
                 onSelect={() => select(node.id)}
+                onPin={(pin) =>
+                  setPendingPin({
+                    ...pin,
+                    nodeId: node.id,
+                    assetId: loaded.version.assetId,
+                    assetVersionId: loaded.version.id,
+                  })
+                }
+                onSelectAnnotation={selectAnnotation}
               />
             );
           }
@@ -121,7 +182,7 @@ function SceneContents({
               <PropNode
                 key={node.id}
                 node={node}
-                selected={node.id === selectedId}
+                selected={!presenting && node.id === selectedId}
                 onSelect={() => select(node.id)}
               />
             );
@@ -130,7 +191,9 @@ function SceneContents({
         })}
       </group>
 
-      {/* Grounds everything with soft occlusion under the pieces. */}
+      {/* Approximates occlusion under the pieces. The path tracer computes the
+          real thing, so this is dropped while rendering. */}
+      {!presenting && (
       <ContactShadows
         position={[0, 0.001, 0]}
         scale={Math.max(doc.environment.boothWidth, doc.environment.boothDepth) * 1.4}
@@ -140,8 +203,20 @@ function SceneContents({
         resolution={1024}
         color="#000000"
       />
+      )}
 
-      {selectedObject && selectedNode && (
+      {presenting && (
+        <PathTracer
+          bounces={renderSettings.bounces}
+          maxSamples={renderSettings.maxSamples}
+          resolutionScale={renderSettings.resolutionScale}
+          fallbackTopColor={doc.environment.backgroundColorHex}
+          fallbackBottomColor={doc.environment.floorColorHex}
+          onSamples={onSamples}
+        />
+      )}
+
+      {mode === 'layout' && !presenting && selectedObject && selectedNode && (
         <TransformControls
           object={selectedObject}
           mode={gizmoMode}
@@ -174,6 +249,16 @@ function SceneContents({
       />
     </>
   );
+}
+
+/** Hands the underlying canvas out so renders can be read back as PNG. */
+function CanvasHandle({ onReady }: { onReady: (canvas: HTMLCanvasElement | null) => void }) {
+  const canvas = useThree((state) => state.gl.domElement);
+  useEffect(() => {
+    onReady(canvas);
+    return () => onReady(null);
+  }, [canvas, onReady]);
+  return null;
 }
 
 /** Applies field-of-view changes made in the inspector to the live camera. */
