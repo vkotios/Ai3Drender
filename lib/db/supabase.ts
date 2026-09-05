@@ -32,6 +32,10 @@ const BUCKET = 'renders';
  * Postgres columns are snake_case; the domain model is camelCase. Keeping the
  * translation in one place means no other module has to know about columns.  */
 
+// Rows arrive untyped from the Supabase client, and this module is the
+// boundary that turns them into typed domain objects. `any` is confined to
+// these mappers rather than leaking past them.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>;
 
 const toProject = (r: Row): Project => ({
