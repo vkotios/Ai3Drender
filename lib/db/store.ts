@@ -3,6 +3,7 @@ import type {
   AnnotationStatus,
   AssetVersion,
   FurnitureAsset,
+  IsoDate,
   Job,
   JobKind,
   JobStatus,
@@ -10,6 +11,8 @@ import type {
   Scene,
   SceneDoc,
   SceneRender,
+  SceneShareLink,
+  ShareRole,
   SourceImage,
   Uuid,
 } from '@/lib/types';
@@ -40,6 +43,13 @@ export type NewAnnotation = Omit<
   'id' | 'createdAt' | 'status' | 'resolvedByVersionId'
 >;
 export type NewSceneRender = Omit<SceneRender, 'id' | 'createdAt'>;
+export interface NewShareLink {
+  sceneId: Uuid;
+  createdBy: string;
+  role?: ShareRole;
+  label?: string | null;
+  expiresAt?: IsoDate | null;
+}
 export interface NewJob {
   projectId: Uuid;
   assetId?: Uuid | null;
@@ -95,10 +105,32 @@ export interface Store {
   listScenes(projectId: Uuid): Promise<Scene[]>;
   updateScene(
     id: Uuid,
-    patch: Partial<Pick<Scene, 'name' | 'doc' | 'direction' | 'acceptedAt'>>,
+    patch: Partial<
+      Pick<
+        Scene,
+        | 'name'
+        | 'doc'
+        | 'direction'
+        | 'acceptedAt'
+        | 'clientApproval'
+        | 'clientApprovalAt'
+        | 'clientApprovalName'
+        | 'clientApprovalNote'
+      >
+    >,
     note?: string,
   ): Promise<Scene>;
   deleteScene(id: Uuid): Promise<void>;
+
+  /* Scene share links - see NewShareLink for the grant model this backs. */
+  createShareLink(input: NewShareLink): Promise<{ link: SceneShareLink; token: string }>;
+  listShareLinks(sceneId: Uuid): Promise<SceneShareLink[]>;
+  getShareLink(id: Uuid): Promise<SceneShareLink | null>;
+  /** Resolve a raw bearer token to its link row. Does not check validity. */
+  getShareLinkByToken(token: string): Promise<SceneShareLink | null>;
+  revokeShareLink(id: Uuid): Promise<SceneShareLink>;
+  /** Best-effort activity marker, so an owner can see a link has been opened. */
+  touchShareLink(id: Uuid): Promise<void>;
 
   /* Jobs */
   createJob(input: NewJob): Promise<Job>;

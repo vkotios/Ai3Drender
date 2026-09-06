@@ -67,6 +67,8 @@ export async function POST(request: Request, { params }: Params) {
         componentRole,
         anchorDescription: describeAnchor(body.point, version.spec.dimensions),
         body: body.body.trim(),
+        source: 'internal',
+        clientName: null,
       }),
       201,
     );

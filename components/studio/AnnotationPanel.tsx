@@ -195,7 +195,12 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
                         {index + 1}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="text-xs leading-snug text-shell-100">{annotation.body}</p>
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-xs leading-snug text-shell-100">{annotation.body}</p>
+                          {annotation.source === 'client' && (
+                            <Badge tone="warn">Client{annotation.clientName ? ` · ${annotation.clientName}` : ''}</Badge>
+                          )}
+                        </div>
                         <p className="mt-0.5 text-[11px] text-shell-400">
                           {annotation.componentName ?? annotation.partName ?? 'surface'} ·{' '}
                           {annotation.anchorDescription}

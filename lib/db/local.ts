@@ -15,9 +15,11 @@ import type {
   Scene,
   SceneDoc,
   SceneRender,
+  SceneShareLink,
   SourceImage,
   Uuid,
 } from '@/lib/types';
+import { generateShareToken, hashShareToken } from '@/lib/share/token';
 import type {
   Blob,
   NewAnnotation,
@@ -27,6 +29,7 @@ import type {
   NewSceneRender,
   NewProject,
   NewScene,
+  NewShareLink,
   NewSourceImage,
   Store,
 } from './store';
@@ -41,6 +44,7 @@ interface Db {
   jobs: Job[];
   annotations: Annotation[];
   sceneRenders: SceneRender[];
+  shareLinks: (SceneShareLink & { tokenHash: string })[];
 }
 
 const EMPTY: Db = {
@@ -53,6 +57,7 @@ const EMPTY: Db = {
   jobs: [],
   annotations: [],
   sceneRenders: [],
+  shareLinks: [],
 };
 
 const ROOT = path.join(process.cwd(), 'storage-local');
@@ -74,6 +79,21 @@ const DEFAULT_LEASE_MS = 5 * 60_000;
  * does not wedge the dev server for long.
  */
 const LOCK_STALE_MS = 10_000;
+
+/** Never let the token hash leave the store - callers only ever see the row. */
+function toPublicShareLink(link: SceneShareLink & { tokenHash: string }): SceneShareLink {
+  return {
+    id: link.id,
+    sceneId: link.sceneId,
+    createdBy: link.createdBy,
+    role: link.role,
+    label: link.label,
+    expiresAt: link.expiresAt,
+    revokedAt: link.revokedAt,
+    lastAccessedAt: link.lastAccessedAt,
+    createdAt: link.createdAt,
+  };
+}
 
 /**
  * Development store. Everything lives in one JSON file plus a blob directory.
@@ -206,6 +226,7 @@ export class LocalStore implements Store {
       db.jobs = db.jobs.filter((j) => j.projectId !== id);
       db.annotations = db.annotations.filter((a) => !assetIds.includes(a.assetId));
       db.sceneRenders = db.sceneRenders.filter((r) => r.projectId !== id);
+      db.shareLinks = db.shareLinks.filter((l) => !sceneIds.includes(l.sceneId));
     });
   }
 
@@ -325,6 +346,10 @@ export class LocalStore implements Store {
         doc: input.doc,
         direction: input.direction ?? null,
         acceptedAt: null,
+        clientApproval: 'pending',
+        clientApprovalAt: null,
+        clientApprovalName: null,
+        clientApprovalNote: null,
         createdAt: now(),
         updatedAt: now(),
       };
@@ -380,6 +405,66 @@ export class LocalStore implements Store {
       db.scenes = db.scenes.filter((s) => s.id !== id);
       db.sceneVersions = db.sceneVersions.filter((v) => v.sceneId !== id);
       db.sceneRenders = db.sceneRenders.filter((r) => r.sceneId !== id);
+      db.shareLinks = db.shareLinks.filter((l) => l.sceneId !== id);
+    });
+  }
+
+  /* Scene share links ------------------------------------------------------ */
+
+  createShareLink(input: NewShareLink): Promise<{ link: SceneShareLink; token: string }> {
+    return this.mutate((db) => {
+      const token = generateShareToken();
+      const link: SceneShareLink & { tokenHash: string } = {
+        id: randomUUID(),
+        sceneId: input.sceneId,
+        createdBy: input.createdBy,
+        role: input.role ?? 'commenter',
+        label: input.label ?? null,
+        expiresAt: input.expiresAt ?? null,
+        revokedAt: null,
+        lastAccessedAt: null,
+        createdAt: now(),
+        tokenHash: hashShareToken(token),
+      };
+      db.shareLinks.push(link);
+      return { link: toPublicShareLink(link), token };
+    });
+  }
+
+  async listShareLinks(sceneId: Uuid): Promise<SceneShareLink[]> {
+    const db = await this.read();
+    return db.shareLinks
+      .filter((l) => l.sceneId === sceneId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(toPublicShareLink);
+  }
+
+  async getShareLink(id: Uuid): Promise<SceneShareLink | null> {
+    const db = await this.read();
+    const link = db.shareLinks.find((l) => l.id === id);
+    return link ? toPublicShareLink(link) : null;
+  }
+
+  async getShareLinkByToken(token: string): Promise<SceneShareLink | null> {
+    const db = await this.read();
+    const hash = hashShareToken(token);
+    const link = db.shareLinks.find((l) => l.tokenHash === hash);
+    return link ? toPublicShareLink(link) : null;
+  }
+
+  revokeShareLink(id: Uuid): Promise<SceneShareLink> {
+    return this.mutate((db) => {
+      const link = db.shareLinks.find((l) => l.id === id);
+      if (!link) throw new Error(`share link ${id} not found`);
+      link.revokedAt ??= now();
+      return toPublicShareLink(link);
+    });
+  }
+
+  touchShareLink(id: Uuid): Promise<void> {
+    return this.mutate((db) => {
+      const link = db.shareLinks.find((l) => l.id === id);
+      if (link) link.lastAccessedAt = now();
     });
   }
 
