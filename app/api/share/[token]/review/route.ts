@@ -17,7 +17,11 @@ export async function POST(request: Request, { params }: Params) {
   const { token } = await params;
   const resolution = await resolveShareToken(token);
   if (!resolution.ok) return apiError(resolution.message, resolution.status);
-  const { store, scene } = resolution.context;
+  const { store, scene, role } = resolution.context;
+  // Same reasoning as app/api/share/[token]/annotations: the UI hides the
+  // approve/request-changes controls on a viewer link, but that is not the
+  // security boundary - reject the write server-side too.
+  if (role !== 'commenter') return apiError('This link is view-only', 403);
 
   const body = (await request.json()) as {
     status?: ClientApproval;

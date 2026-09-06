@@ -3,7 +3,18 @@
 import { useEffect, useState } from 'react';
 
 import { Badge, Button, TextInput } from '@/components/ui';
-import type { SceneShareLink } from '@/lib/types';
+import type { SceneShareLink, ShareRole } from '@/lib/types';
+
+const ROLE_COPY: Record<ShareRole, { label: string; hint: string }> = {
+  commenter: {
+    label: 'Commenter',
+    hint: 'Can orbit the scene, pin notes, and sign off.',
+  },
+  viewer: {
+    label: 'Viewer',
+    hint: 'Can orbit the scene only - no notes, no sign-off.',
+  },
+};
 
 /**
  * Owner-facing control for client review links: generate, list, revoke.
@@ -20,6 +31,7 @@ export function SharePanel({ sceneId, onClose }: { sceneId: string; onClose: () 
   const [error, setError] = useState<string | null>(null);
   const [label, setLabel] = useState('');
   const [expiresInDays, setExpiresInDays] = useState('14');
+  const [role, setRole] = useState<ShareRole>('commenter');
   const [justCreated, setJustCreated] = useState<{ url: string; label: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -43,7 +55,7 @@ export function SharePanel({ sceneId, onClose }: { sceneId: string; onClose: () 
       const response = await fetch(`/api/scenes/${sceneId}/share`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: label.trim() || null, expiresInDays: days }),
+        body: JSON.stringify({ label: label.trim() || null, expiresInDays: days, role }),
       });
       if (!response.ok) throw new Error((await response.json()).error ?? 'Could not create the link');
       const { link, url } = await response.json();
@@ -94,8 +106,9 @@ export function SharePanel({ sceneId, onClose }: { sceneId: string; onClose: () 
         </div>
 
         <p className="mb-3 text-[11px] leading-relaxed text-shell-400">
-          Anyone with this link can orbit the scene, pin notes, and sign off - read-only, no
-          account needed. They cannot stage pieces, edit, save or export.
+          Anyone with this link can orbit the scene - read-only, no account needed. They cannot
+          stage pieces, edit, save or export. A Commenter can also pin notes and sign off; a
+          Viewer can only look.
         </p>
 
         {justCreated && (
@@ -128,6 +141,23 @@ export function SharePanel({ sceneId, onClose }: { sceneId: string; onClose: () 
             {error}
           </p>
         )}
+
+        <div className="mb-2 flex rounded-md border border-shell-700 p-0.5">
+          {(Object.keys(ROLE_COPY) as ShareRole[]).map((value) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setRole(value)}
+              aria-pressed={role === value}
+              className={`flex-1 rounded px-2 py-1 text-[11px] transition ${
+                role === value ? 'bg-shell-700 text-shell-100' : 'text-shell-400 hover:text-shell-100'
+              }`}
+            >
+              {ROLE_COPY[value].label}
+            </button>
+          ))}
+        </div>
+        <p className="mb-2 text-[11px] text-shell-500">{ROLE_COPY[role].hint}</p>
 
         <div className="mb-3 flex gap-1.5">
           <TextInput
@@ -162,6 +192,7 @@ export function SharePanel({ sceneId, onClose }: { sceneId: string; onClose: () 
                   <div className="min-w-0">
                     <p className="truncate text-xs text-shell-100">{link.label ?? 'Untitled link'}</p>
                     <p className="text-[11px] text-shell-500">
+                      {ROLE_COPY[link.role].label} ·{' '}
                       {link.expiresAt ? `Expires ${new Date(link.expiresAt).toLocaleDateString()}` : 'No expiry'}
                     </p>
                   </div>
