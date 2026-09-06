@@ -1,4 +1,4 @@
-import type { Dimensions3, FurnitureSpec, Vec3 } from '@/lib/types';
+import type { Dimensions3, FurnitureSpec, SelectionKind, StrokePoint, Vec3 } from '@/lib/types';
 
 /**
  * Turning a click into something a model can act on.
@@ -109,13 +109,48 @@ export function anchorWithinBounds(point: Vec3, dimensions: Dimensions3): boolea
   );
 }
 
+/**
+ * Every distinct part a freehand stroke crosses, base-named and
+ * de-duplicated in first-appearance order.
+ *
+ * A drawn line rarely stays on one part the way a click does, so
+ * `formatAnnotationForPrompt` names the note against every part it actually
+ * touched rather than only the first one recorded on `Annotation.partName`.
+ */
+export function distinctStrokePartNames(strokePoints: Pick<StrokePoint, 'partName'>[]): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const sample of strokePoints) {
+    if (!sample.partName) continue;
+    const name = baseName(sample.partName);
+    if (!seen.has(name)) {
+      seen.add(name);
+      names.push(name);
+    }
+  }
+  return names;
+}
+
 /** One line per note, as handed to the model. */
 export function formatAnnotationForPrompt(annotation: {
   body: string;
   partName: string | null;
   componentName: string | null;
   anchorDescription: string;
+  selectionKind?: SelectionKind;
+  strokePoints?: Pick<StrokePoint, 'partName'>[] | null;
 }): string {
+  if (annotation.selectionKind === 'freehand') {
+    const parts = distinctStrokePartNames(annotation.strokePoints ?? []);
+    const surface =
+      parts.length === 0
+        ? 'the surface'
+        : parts.length === 1
+          ? `the ${parts[0]} surface`
+          : `the ${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]} surfaces`;
+    return `- a freehand stroke drawn across ${surface} (${annotation.anchorDescription}): ${annotation.body}`;
+  }
+
   const part = annotation.componentName ?? annotation.partName;
   const location = part ? `on the ${part} (${annotation.anchorDescription})` : `at ${annotation.anchorDescription}`;
   return `- ${location}: ${annotation.body}`;

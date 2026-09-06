@@ -1,16 +1,32 @@
 'use client';
 
-import { Html, useGLTF } from '@react-three/drei';
-import { useMemo, useRef } from 'react';
+import { Html, Line, useGLTF } from '@react-three/drei';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 
 import { baseName } from '@/lib/scene/anchor';
+import {
+  MIN_STROKE_POINTS,
+  appendStrokeSample,
+  primaryStrokePartName,
+  strokeCentroid,
+} from '@/lib/scene/stroke';
 import { applyMaterialOverrides } from '@/lib/studio/applyMaterialOverrides';
-import type { Annotation, AssetVersion, SceneNode } from '@/lib/types';
+import type { Annotation, AssetVersion, SceneNode, StrokePoint } from '@/lib/types';
 import { useStudio, type PendingPin, type StudioMode } from '@/lib/studio/store';
 
 import { MeshUrlBoundary } from './MeshUrlBoundary';
+
+/**
+ * Minimum spacing between kept freehand samples, in metres.
+ *
+ * Throttles a pointer-move stream that can otherwise fire far faster than
+ * anyone actually needs points recorded - without this a slow drag across a
+ * piece a couple of metres across would accumulate thousands of nearly
+ * identical samples.
+ */
+const MIN_STROKE_SAMPLE_DISTANCE_M = 0.01;
 
 interface AssetNodeProps {
   node: SceneNode;
@@ -69,6 +85,104 @@ function AssetMesh({
   const { scene } = useGLTF(meshUrl);
   const groupRef = useRef<THREE.Group>(null);
   const selectionMode = useStudio((s) => s.selectionMode);
+
+  // Freehand capture: samples accumulate in a ref (not state) so a fast
+  // pointer-move stream never has to wait on React, and are mirrored into
+  // `liveStroke` state only when a sample actually survives the min-distance
+  // throttle, so the in-progress line redraws without re-rendering on every
+  // dropped sample.
+  const strokeRef = useRef<StrokePoint[]>([]);
+  const [liveStroke, setLiveStroke] = useState<StrokePoint[]>([]);
+  // Set only while a stroke is in progress; also doubles as the finish
+  // handler so window-level pointerup/cancel listeners (registered below)
+  // can call the exact same finalize path a same-object pointerup would.
+  const finalizeStrokeRef = useRef<(() => void) | null>(null);
+
+  // A stroke is finalized by a *window* listener rather than this mesh's own
+  // onPointerUp: react-three-fiber only calls an object's pointer handlers
+  // while the ray still intersects it, so releasing after the cursor has
+  // slid off the model's silhouette mid-drag would otherwise never fire
+  // onPointerUp here at all, leaving `drawing` stuck true and orbit
+  // permanently disabled. A native window listener fires regardless of
+  // where the ray lands.
+  useEffect(() => {
+    return () => {
+      // Unmounting mid-stroke (piece removed, version swapped) must not
+      // leave OrbitControls disabled for the rest of the session.
+      finalizeStrokeRef.current?.();
+    };
+  }, []);
+
+  /** A stroke sample: this group's local space, plus whatever part it hit. */
+  const sampleFromEvent = (event: ThreeEvent<PointerEvent>): StrokePoint | null => {
+    const group = groupRef.current;
+    if (!group) return null;
+    const local = group.worldToLocal(event.point.clone());
+    return { point: { x: local.x, y: local.y, z: local.z }, partName: event.object.name || null };
+  };
+
+  const handlePointerDown = (event: ThreeEvent<PointerEvent>) => {
+    if (mode !== 'comment' || selectionMode !== 'freehand') return;
+    event.stopPropagation();
+
+    const first = sampleFromEvent(event);
+    strokeRef.current = first ? [first] : [];
+    setLiveStroke(strokeRef.current);
+    useStudio.getState().setDrawing(true);
+
+    // Best-effort: keeps this pointer's events flowing to the canvas even if
+    // released outside it. Never throws in practice, but pointer capture is
+    // not implemented everywhere (older WebViews), so this must not be fatal.
+    try {
+      (event.nativeEvent.target as Element | null)?.setPointerCapture?.(event.nativeEvent.pointerId);
+    } catch {
+      // Drawing still works without capture - it just won't survive a
+      // release past the canvas edge.
+    }
+
+    const finalize = () => {
+      window.removeEventListener('pointerup', finalize);
+      window.removeEventListener('pointercancel', finalize);
+      finalizeStrokeRef.current = null;
+      useStudio.getState().setDrawing(false);
+
+      const samples = strokeRef.current;
+      strokeRef.current = [];
+      setLiveStroke([]);
+
+      // The mode may have changed while the stroke was in progress (the
+      // reviewer switched tools or left comment mode mid-drag) - honour
+      // that rather than surfacing a note for a gesture that no longer
+      // matches what's on screen.
+      const state = useStudio.getState();
+      if (state.mode !== 'comment' || state.selectionMode !== 'freehand') return;
+      if (samples.length < MIN_STROKE_POINTS) return; // a tap, not a drawn stroke.
+
+      onPin({
+        point: strokeCentroid(samples),
+        normal: { x: 0, y: 1, z: 0 },
+        partName: primaryStrokePartName(samples),
+        selectionKind: 'freehand',
+        instanceCount: 1,
+        strokePoints: samples,
+      });
+    };
+    finalizeStrokeRef.current = finalize;
+    window.addEventListener('pointerup', finalize);
+    window.addEventListener('pointercancel', finalize);
+  };
+
+  const handlePointerMove = (event: ThreeEvent<PointerEvent>) => {
+    if (!finalizeStrokeRef.current) return; // no stroke in progress on this piece.
+    event.stopPropagation();
+    const sample = sampleFromEvent(event);
+    if (!sample) return;
+    const next = appendStrokeSample(strokeRef.current, sample, MIN_STROKE_SAMPLE_DISTANCE_M);
+    if (next !== strokeRef.current) {
+      strokeRef.current = next;
+      setLiveStroke(next);
+    }
+  };
 
   const prepared = useMemo(() => {
     // Clone so several nodes can reference the same version, and so material
@@ -150,6 +264,10 @@ function AssetMesh({
       onSelect();
       return;
     }
+    // A freehand selection is captured by the pointer down/move/up handlers
+    // above instead - a bare click there is just a stroke too short to keep
+    // (see MIN_STROKE_POINTS), not a point pin.
+    if (selectionMode === 'freehand') return;
 
     const group = groupRef.current;
     if (!group) return;
@@ -222,6 +340,8 @@ function AssetMesh({
       rotation={[node.transform.rotation.x, node.transform.rotation.y, node.transform.rotation.z]}
       scale={[node.transform.scale.x, node.transform.scale.y, node.transform.scale.z]}
       onClick={handleClick}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
       userData={{ nodeId: node.id, exportable: true }}
     >
       <group position={prepared.offset} scale={prepared.fit} userData={exportUserData}>
@@ -241,15 +361,37 @@ function AssetMesh({
           onClick={() => onSelectAnnotation(annotation.id)}
         />
       ))}
+      {annotations.map((annotation) =>
+        annotation.selectionKind === 'freehand' &&
+        annotation.strokePoints &&
+        annotation.strokePoints.length > 1 ? (
+          <FreehandStroke
+            key={`stroke-${annotation.id}`}
+            points={annotation.strokePoints}
+            status={annotation.status}
+            active={annotation.id === selectedAnnotationId}
+          />
+        ) : null,
+      )}
+
+      {/* The stroke still being drawn, redrawn live as samples accumulate. */}
+      {liveStroke.length > 1 && <FreehandStroke points={liveStroke} status="open" active pending />}
 
       {pendingPin && pendingPin.nodeId === node.id && (
-        <Pin
-          position={[pendingPin.point.x, pendingPin.point.y, pendingPin.point.z]}
-          label="+"
-          status="open"
-          active
-          pending
-        />
+        <>
+          <Pin
+            position={[pendingPin.point.x, pendingPin.point.y, pendingPin.point.z]}
+            label="+"
+            status="open"
+            active
+            pending
+          />
+          {pendingPin.selectionKind === 'freehand' &&
+            pendingPin.strokePoints &&
+            pendingPin.strokePoints.length > 1 && (
+              <FreehandStroke points={pendingPin.strokePoints} status="open" active pending />
+            )}
+        </>
       )}
     </group>
   );
@@ -307,6 +449,49 @@ function Pin({
         </span>
       </Html>
     </group>
+  );
+}
+
+/**
+ * A freehand annotation's stroke, drawn as a line following its sampled
+ * points across the mesh surface - the same anchor space the Pin markers
+ * above use, so it renders correctly under this same group's transform
+ * regardless of camera angle.
+ *
+ * A fat (screen-space) line rather than plain `lineBasicMaterial`, since
+ * WebGL's native line width is capped at 1px on most platforms and a
+ * one-pixel stroke would be unreadable at any real distance from the piece.
+ * Excluded from raycasting and export exactly like the Pin markers and
+ * SelectionBox - a helper, never part of the exported mesh.
+ */
+function FreehandStroke({
+  points,
+  status,
+  active,
+  pending = false,
+}: {
+  points: { point: { x: number; y: number; z: number } }[];
+  status: 'open' | 'applied' | 'dismissed';
+  active: boolean;
+  pending?: boolean;
+}) {
+  const vertices = useMemo<[number, number, number][]>(
+    () => points.map((p) => [p.point.x, p.point.y, p.point.z]),
+    [points],
+  );
+  if (vertices.length < 2) return null;
+
+  return (
+    <Line
+      points={vertices}
+      color={pending ? '#e9c46a' : PIN_COLORS[status]}
+      lineWidth={active ? 3 : 2}
+      transparent
+      opacity={pending ? 0.85 : 0.95}
+      depthTest={false}
+      userData={{ helper: true }}
+      raycast={() => null}
+    />
   );
 }
 

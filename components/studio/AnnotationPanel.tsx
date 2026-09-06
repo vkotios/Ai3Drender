@@ -107,6 +107,7 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
           partName: pendingPin.partName,
           selectionKind: pendingPin.selectionKind,
           instanceCount: pendingPin.instanceCount,
+          strokePoints: pendingPin.strokePoints ?? null,
           assetVersionId: pendingPin.assetVersionId,
           sceneId,
         }),
@@ -210,6 +211,13 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
                 {pendingPin.instanceCount > 1 ? ` (all ${pendingPin.instanceCount} instances)` : ''}{' '}
                 on {pieceName(pendingPin.assetId)}.
               </>
+            ) : pendingPin.selectionKind === 'freehand' ? (
+              <>
+                Drew a stroke across{' '}
+                <span className="text-shell-100">{pendingPin.partName ?? 'the surface'}</span> on{' '}
+                {pieceName(pendingPin.assetId)}
+                {pendingPin.strokePoints ? ` (${pendingPin.strokePoints.length} points)` : ''}.
+              </>
             ) : (
               <>
                 Pinned to{' '}
@@ -226,7 +234,9 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
             placeholder={
               pendingPin.selectionKind === 'part'
                 ? 'Slim all of these down to 40mm square'
-                : 'Slim this leg to 40mm square'
+                : pendingPin.selectionKind === 'freehand'
+                  ? 'Shave this whole edge down'
+                  : 'Slim this leg to 40mm square'
             }
           />
           <div className="mt-2 flex gap-1.5">
@@ -258,6 +268,7 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
               [
                 { value: 'point', label: 'This point' },
                 { value: 'part', label: 'Whole part' },
+                { value: 'freehand', label: 'Freehand' },
               ] as { value: SelectionKind; label: string }[]
             ).map(({ value, label }) => (
               <button
@@ -273,10 +284,17 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
               </button>
             ))}
           </div>
-          <p className="mt-1.5 text-[11px] text-shell-500">
-            Hold <span className="text-shell-300">Shift</span> while clicking to use the other one
-            just this once.
-          </p>
+          {selectionMode === 'freehand' ? (
+            <p className="mt-1.5 text-[11px] text-shell-500">
+              Click and drag across a piece to draw a stroke - along an edge, around a region -
+              and release to pin a note to it.
+            </p>
+          ) : (
+            <p className="mt-1.5 text-[11px] text-shell-500">
+              Hold <span className="text-shell-300">Shift</span> while clicking to use the other
+              one just this once.
+            </p>
+          )}
         </Panel>
       )}
 
@@ -381,6 +399,12 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
                                 <>
                                   {' '}
                                   <Badge tone="neutral">Part</Badge>
+                                </>
+                              )}
+                              {annotation.selectionKind === 'freehand' && (
+                                <>
+                                  {' '}
+                                  <Badge tone="neutral">Freehand</Badge>
                                 </>
                               )}
                             </p>

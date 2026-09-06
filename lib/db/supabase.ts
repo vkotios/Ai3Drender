@@ -145,6 +145,8 @@ const toAnnotation = (r: Row): Annotation => ({
   selectionKind: r.selection_kind ?? 'point',
   point: r.point,
   normal: r.normal,
+  // Rows written before this column existed (or any non-freehand note) round-trip as null.
+  strokePoints: r.stroke_points ?? null,
   partName: r.part_name,
   componentName: r.component_name,
   componentRole: r.component_role,
@@ -844,6 +846,7 @@ export class SupabaseStore implements Store {
         selection_kind: input.selectionKind,
         point: input.point,
         normal: input.normal,
+        stroke_points: input.strokePoints,
         part_name: input.partName,
         component_name: input.componentName,
         component_role: input.componentRole,
