@@ -14,8 +14,8 @@ import type {
   MaterialLibraryEntry,
   Project,
   Scene,
-  SceneDoc,
   SceneRender,
+  SceneVersion,
   SourceImage,
   Uuid,
 } from '@/lib/types';
@@ -34,6 +34,7 @@ import type {
   NewSourceImage,
   Store,
 } from './store';
+import { SceneConflictError } from './store';
 
 interface Db {
   projects: Project[];
@@ -41,7 +42,7 @@ interface Db {
   assets: FurnitureAsset[];
   assetVersions: AssetVersion[];
   scenes: Scene[];
-  sceneVersions: { id: string; sceneId: string; versionNumber: number; doc: SceneDoc; note: string; createdAt: string }[];
+  sceneVersions: SceneVersion[];
   jobs: Job[];
   annotations: Annotation[];
   sceneRenders: SceneRender[];
@@ -374,6 +375,7 @@ export class LocalStore implements Store {
         doc: input.doc,
         direction: input.direction ?? null,
         acceptedAt: null,
+        version: 1,
         createdAt: now(),
         updatedAt: now(),
       };
@@ -402,19 +404,28 @@ export class LocalStore implements Store {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
-  updateScene(id: Uuid, patch: Partial<Scene>, note = ''): Promise<Scene> {
+  updateScene(
+    id: Uuid,
+    patch: Partial<Scene>,
+    note = '',
+    expectedVersion?: number,
+  ): Promise<Scene> {
     return this.mutate((db) => {
       const scene = db.scenes.find((s) => s.id === id);
       if (!scene) throw new Error(`scene ${id} not found`);
+      // Checked (and the write rejected) only for content-changing saves with
+      // a version the caller actually loaded - background jobs and restores
+      // pass no expectedVersion and always win.
+      if (patch.doc !== undefined && expectedVersion !== undefined && scene.version !== expectedVersion) {
+        throw new SceneConflictError(scene);
+      }
       Object.assign(scene, patch, { updatedAt: now() });
-      if (patch.doc) {
-        const highest = db.sceneVersions
-          .filter((v) => v.sceneId === id)
-          .reduce((max, v) => Math.max(max, v.versionNumber), 0);
+      if (patch.doc !== undefined) {
+        scene.version += 1;
         db.sceneVersions.push({
           id: randomUUID(),
           sceneId: id,
-          versionNumber: highest + 1,
+          versionNumber: scene.version,
           doc: patch.doc,
           note,
           createdAt: now(),
@@ -438,6 +449,18 @@ export class LocalStore implements Store {
     await this.deleteBlobPrefix(`${scene.projectId}/renders/${scene.id}`).catch((cause) => {
       console.error(`[store] deleteScene: failed to remove render blobs for scene ${id}`, cause);
     });
+  }
+
+  async listSceneVersions(sceneId: Uuid): Promise<SceneVersion[]> {
+    const db = await this.read();
+    return db.sceneVersions
+      .filter((v) => v.sceneId === sceneId)
+      .sort((a, b) => b.versionNumber - a.versionNumber);
+  }
+
+  async getSceneVersion(sceneId: Uuid, versionNumber: number): Promise<SceneVersion | null> {
+    const db = await this.read();
+    return db.sceneVersions.find((v) => v.sceneId === sceneId && v.versionNumber === versionNumber) ?? null;
   }
 
   /* Jobs ------------------------------------------------------------------- */

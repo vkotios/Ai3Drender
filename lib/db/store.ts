@@ -11,6 +11,7 @@ import type {
   Scene,
   SceneDoc,
   SceneRender,
+  SceneVersion,
   SourceImage,
   Uuid,
 } from '@/lib/types';
@@ -52,6 +53,20 @@ export type NewAnnotation = Omit<
   'id' | 'createdAt' | 'status' | 'resolvedByVersionId'
 >;
 export type NewSceneRender = Omit<SceneRender, 'id' | 'createdAt'>;
+
+/**
+ * Thrown by `updateScene` when a `doc` write's `expectedVersion` no longer
+ * matches the scene's current version - i.e. someone else saved in between.
+ * Carries the scene as it stands now, so the caller can show what changed.
+ */
+export class SceneConflictError extends Error {
+  constructor(public readonly current: Scene) {
+    super(
+      `scene ${current.id} is at version ${current.version}, which does not match the expected version`,
+    );
+    this.name = 'SceneConflictError';
+  }
+}
 export interface NewJob {
   projectId: Uuid;
   assetId?: Uuid | null;
@@ -156,12 +171,24 @@ export interface Store {
   createScene(input: NewScene): Promise<Scene>;
   getScene(id: Uuid): Promise<Scene | null>;
   listScenes(projectId: Uuid): Promise<Scene[]>;
+  /**
+   * `expectedVersion`, when given alongside a `doc` write, is checked against
+   * the scene's current version; a mismatch throws `SceneConflictError`
+   * instead of overwriting. Omit it (as background jobs and restores do) to
+   * write unconditionally. Every accepted `doc` write bumps the scene's
+   * version and appends a `scene_versions` / `sceneVersions` row.
+   */
   updateScene(
     id: Uuid,
     patch: Partial<Pick<Scene, 'name' | 'doc' | 'direction' | 'acceptedAt'>>,
     note?: string,
+    expectedVersion?: number,
   ): Promise<Scene>;
   deleteScene(id: Uuid): Promise<void>;
+
+  /** Every retained save of a scene's `doc`, newest first. */
+  listSceneVersions(sceneId: Uuid): Promise<SceneVersion[]>;
+  getSceneVersion(sceneId: Uuid, versionNumber: number): Promise<SceneVersion | null>;
 
   /* Jobs */
   createJob(input: NewJob): Promise<Job>;

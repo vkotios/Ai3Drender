@@ -362,8 +362,24 @@ export interface Scene {
   /** Art direction produced by Gemini for this scene, kept for traceability. */
   direction: SceneDirection | null;
   acceptedAt: IsoDate | null;
+  /**
+   * Bumped every time `doc` is saved. The studio round-trips whatever value
+   * it loaded back with the next save so the server can tell a stale write
+   * from a fresh one - see `Store.updateScene` and `SceneConflictError`.
+   */
+  version: number;
   createdAt: IsoDate;
   updatedAt: IsoDate;
+}
+
+/** One retained save of a scene's `doc`, going back to its creation. */
+export interface SceneVersion {
+  id: Uuid;
+  sceneId: Uuid;
+  versionNumber: number;
+  doc: SceneDoc;
+  note: string;
+  createdAt: IsoDate;
 }
 
 /** Gemini's art-direction pass over a booth brief. */
