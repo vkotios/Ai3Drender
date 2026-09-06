@@ -484,6 +484,14 @@ function AssetCard({
               Accept
             </Button>
           )}
+          {currentVersion?.acceptedAt && (
+            <a
+              href={`/api/assets/${asset.id}/versions/${currentVersion.id}/bom`}
+              className="inline-flex items-center justify-center gap-1.5 rounded-md border border-shell-700 bg-shell-800 px-2.5 py-1 text-xs font-medium text-shell-100 transition hover:border-shell-600 hover:bg-shell-700"
+            >
+              Export BOM
+            </a>
+          )}
           <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)}>
             Refine
           </Button>
