@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { Badge, Field, Panel, Slider, TextInput } from '@/components/ui';
+import { overlappingNodeNames } from '@/lib/scene/collisions';
 import { orphanedOverrideKeys } from '@/lib/scene/materialOverrides';
 import { BOOTH_PRESETS, PROP_DEFINITIONS, getPreset } from '@/lib/scene/presets';
 import { useStudio } from '@/lib/studio/store';
@@ -21,10 +22,20 @@ export function Inspector() {
 }
 
 function NodeInspector({ node }: { node: SceneNode }) {
+  const doc = useStudio((s) => s.doc);
   const patchNode = useStudio((s) => s.patchNode);
   const removeNode = useStudio((s) => s.removeNode);
   const versions = useStudio((s) => s.versions);
   const loaded = node.assetVersionId ? versions[node.assetVersionId] : null;
+
+  // Recomputed off the doc (and whatever asset versions have loaded) on every
+  // render, so any move, resize or add anywhere in the scene refreshes it -
+  // an axis-aligned bounding-box check, deliberately not full mesh collision.
+  // See lib/scene/collisions.ts.
+  const overlapNames = useMemo(
+    () => (doc ? overlappingNodeNames(node, doc, versions) : []),
+    [doc, node, versions],
+  );
 
   const setPosition = (axis: 'x' | 'y' | 'z', value: number) =>
     patchNode(node.id, {
@@ -60,6 +71,13 @@ function NodeInspector({ node }: { node: SceneNode }) {
           />
           Visible
         </label>
+
+        {overlapNames.length > 0 && (
+          <div className="mt-3 rounded-md border border-amber-700/60 bg-amber-950/30 p-2.5 text-[11px] text-amber-300">
+            This piece overlaps with {joinNames(overlapNames)}. Overlap is a bounding-box
+            estimate and does not block saving - move the pieces apart if this is not intended.
+          </div>
+        )}
       </Panel>
 
       <Panel title="Placement">
@@ -555,6 +573,12 @@ function EnvironmentInspector() {
       </Panel>
     </div>
   );
+}
+
+/** "A", "A and B", or "A, B and C" - never a bare comma-joined list. */
+function joinNames(names: string[]): string {
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 function ColorRow({
