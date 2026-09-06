@@ -1,6 +1,7 @@
 import { apiError, json, withSession } from '@/lib/api';
+import { extractMentions } from '@/lib/annotations/mentions';
 import { requireProject } from '@/lib/db';
-import type { AnnotationStatus } from '@/lib/types';
+import type { Annotation, AnnotationStatus } from '@/lib/types';
 
 type Params = { params: Promise<{ annotationId: string }> };
 
@@ -10,7 +11,7 @@ type Params = { params: Promise<{ annotationId: string }> };
  */
 export async function PATCH(request: Request, { params }: Params) {
   const { annotationId } = await params;
-  const patch = (await request.json()) as { body?: string; status?: AnnotationStatus };
+  const body = (await request.json()) as { body?: string; status?: AnnotationStatus };
 
   return withSession(async (session) => {
     const annotation = await session.store.getAnnotation(annotationId);
@@ -20,6 +21,12 @@ export async function PATCH(request: Request, { params }: Params) {
     if (!asset || !(await requireProject(session, asset.projectId))) {
       return apiError('Note not found', 404);
     }
+
+    const patch: Partial<Annotation> = { ...body };
+    // Editing the body re-derives which names are mentioned, same as at
+    // creation - an edited note shouldn't keep showing a mention that was
+    // typed out of it, or miss one just added.
+    if (body.body !== undefined) patch.mentions = extractMentions(body.body);
 
     return json(await session.store.updateAnnotation(annotation.id, patch));
   });

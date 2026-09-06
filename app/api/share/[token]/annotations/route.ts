@@ -1,4 +1,5 @@
 import { apiError, json } from '@/lib/api';
+import { extractMentions } from '@/lib/annotations/mentions';
 import { describeAnchor, resolveComponent } from '@/lib/scene/anchor';
 import { referencedAssetVersionIds, resolveShareToken } from '@/lib/share/access';
 import type { Vec3 } from '@/lib/types';
@@ -46,6 +47,7 @@ export async function POST(request: Request, { params }: Params) {
   if (!version) return apiError('Version not found', 404);
 
   const { componentName, componentRole } = resolveComponent(body.partName ?? null, version.spec);
+  const trimmedBody = body.body.trim();
 
   return json(
     await store.createAnnotation({
@@ -60,11 +62,15 @@ export async function POST(request: Request, { params }: Params) {
       componentName,
       componentRole,
       anchorDescription: describeAnchor(body.point, version.spec.dimensions),
-      body: body.body.trim(),
+      body: trimmedBody,
       source: 'client',
       clientName,
       staleNote: null,
       selectionKind: 'point',
+      // Threaded replies and @mentions are reviewed from the studio panel
+      // only (issue #40) - a share-view note is always a fresh top-level pin.
+      parentAnnotationId: null,
+      mentions: extractMentions(trimmedBody),
     }),
     201,
   );

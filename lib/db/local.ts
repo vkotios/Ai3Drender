@@ -698,7 +698,9 @@ export class LocalStore implements Store {
 
   deleteAnnotation(id: Uuid): Promise<void> {
     return this.mutate((db) => {
-      db.annotations = db.annotations.filter((a) => a.id !== id);
+      // Mirrors the `on delete cascade` on annotations.parent_annotation_id
+      // in Postgres: removing a note takes its replies with it.
+      db.annotations = db.annotations.filter((a) => a.id !== id && a.parentAnnotationId !== id);
     });
   }
 

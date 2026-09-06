@@ -355,7 +355,11 @@ async function carryForwardOpenAnnotations(
   excludeIds: Set<string>,
 ): Promise<Annotation[]> {
   const stillOpen = (await store.listAnnotations([asset.id], ['open'])).filter(
-    (a) => a.assetVersionId === parent.id && !excludeIds.has(a.id),
+    // A reply piggybacks on its parent's anchor rather than carrying an
+    // independent one of its own (see Annotation.parentAnnotationId), so it
+    // has no anchor to re-resolve here - only the top-level note it replies
+    // to gets carried forward.
+    (a) => a.assetVersionId === parent.id && !excludeIds.has(a.id) && !a.parentAnnotationId,
   );
 
   const carried: Annotation[] = [];

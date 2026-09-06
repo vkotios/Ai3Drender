@@ -142,6 +142,8 @@ describe('pipeline: refine', () => {
       selectionKind: 'point',
       anchorDescription: 'front-left, 300 mm above the floor',
       body: 'Make these legs slimmer.',
+      parentAnnotationId: null,
+      mentions: [],
     });
     expect(annotation.status).toBe('open');
 
@@ -213,6 +215,8 @@ describe('pipeline: refine', () => {
       selectionKind: 'point',
       anchorDescription: 'centre, 0 mm above the floor',
       body: 'Unrelated note.',
+      parentAnnotationId: null,
+      mentions: [],
     });
     expect((await store.getAnnotation(annotation.id))?.status).toBe('open');
   });
