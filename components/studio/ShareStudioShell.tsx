@@ -20,6 +20,37 @@ const StudioCanvas = dynamic(() => import('./StudioCanvas').then((m) => m.Studio
 
 const CLIENT_NAME_KEY = 'ai3drender:share-client-name';
 
+/** Every verdict the client can actively submit - `pending` is a state, not a choice. */
+const REVIEW_CHOICES: { value: Exclude<ClientApproval, 'pending'>; label: string; hint: string }[] = [
+  { value: 'approved', label: 'Approved', hint: 'Nothing to change - ready to build.' },
+  {
+    value: 'approved_with_changes',
+    label: 'Approved, with changes',
+    hint: 'Sign off now; the notes below cover what still needs adjusting.',
+  },
+  {
+    value: 'changes_requested',
+    label: 'Changes requested',
+    hint: 'Please address the notes before this goes ahead.',
+  },
+  { value: 'not_relevant', label: 'Not relevant to me', hint: "This stand isn't mine to review." },
+];
+
+function approvalLabel(status: ClientApproval): string {
+  switch (status) {
+    case 'approved':
+      return 'Approved';
+    case 'approved_with_changes':
+      return 'Approved, with changes';
+    case 'changes_requested':
+      return 'Changes requested';
+    case 'not_relevant':
+      return 'Marked not relevant';
+    default:
+      return 'Pending';
+  }
+}
+
 /**
  * The client's read-only review view.
  *
@@ -76,6 +107,9 @@ export function ShareStudioShell({
     note: scene.clientApprovalNote,
   });
   const [reviewNote, setReviewNote] = useState('');
+  const [reviewChoice, setReviewChoice] = useState<Exclude<ClientApproval, 'pending'>>(
+    scene.clientApproval === 'pending' ? 'approved' : scene.clientApproval,
+  );
 
   useEffect(() => {
     load(scene, versions, annotations);
@@ -298,34 +332,50 @@ export function ShareStudioShell({
           <Panel title="Sign off">
             {approval !== 'pending' && (
               <p className="mb-2 text-[11px] leading-relaxed text-shell-400">
-                {approval === 'approved' ? 'Approved' : 'Changes requested'} by {approvalMeta.name}
+                {approvalLabel(approval)} by {approvalMeta.name}
                 {approvalMeta.at && ` on ${new Date(approvalMeta.at).toLocaleString()}`}
                 {approvalMeta.note && <> — &quot;{approvalMeta.note}&quot;</>}
               </p>
             )}
-            <Field label="Notes (optional)">
-              <TextInput
-                value={reviewNote}
-                onChange={(e) => setReviewNote(e.target.value)}
-                placeholder="Looks great, just fix the notes above"
-              />
-            </Field>
+            <fieldset className="space-y-1.5">
+              <legend className="sr-only">Review verdict</legend>
+              {REVIEW_CHOICES.map((choice) => (
+                <label
+                  key={choice.value}
+                  className="flex cursor-pointer items-start gap-2 rounded-md border border-shell-800 p-2 has-[:checked]:border-shell-500 has-[:checked]:bg-shell-900"
+                >
+                  <input
+                    type="radio"
+                    name="review-verdict"
+                    value={choice.value}
+                    checked={reviewChoice === choice.value}
+                    onChange={() => setReviewChoice(choice.value)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="block text-xs text-shell-100">{choice.label}</span>
+                    <span className="block text-[11px] text-shell-400">{choice.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+            <div className="mt-2">
+              <Field label="Notes (optional)">
+                <TextInput
+                  value={reviewNote}
+                  onChange={(e) => setReviewNote(e.target.value)}
+                  placeholder="Looks great, just fix the notes above"
+                />
+              </Field>
+            </div>
             <div className="mt-2 flex gap-1.5">
               <Button
                 size="sm"
                 variant="primary"
                 disabled={busy || !clientName.trim()}
-                onClick={() => submitReview('approved')}
+                onClick={() => submitReview(reviewChoice)}
               >
-                Approve
-              </Button>
-              <Button
-                size="sm"
-                variant="danger"
-                disabled={busy || !clientName.trim()}
-                onClick={() => submitReview('changes_requested')}
-              >
-                Request changes
+                Submit review
               </Button>
             </div>
           </Panel>
@@ -337,7 +387,16 @@ export function ShareStudioShell({
 }
 
 function ApprovalBadge({ status }: { status: ClientApproval }) {
-  if (status === 'approved') return <Badge tone="good">Approved</Badge>;
-  if (status === 'changes_requested') return <Badge tone="bad">Changes requested</Badge>;
-  return <Badge tone="neutral">Awaiting review</Badge>;
+  switch (status) {
+    case 'approved':
+      return <Badge tone="good">Approved</Badge>;
+    case 'approved_with_changes':
+      return <Badge tone="warn">Approved, with changes</Badge>;
+    case 'changes_requested':
+      return <Badge tone="bad">Changes requested</Badge>;
+    case 'not_relevant':
+      return <Badge tone="neutral">Not relevant</Badge>;
+    default:
+      return <Badge tone="neutral">Awaiting review</Badge>;
+  }
 }

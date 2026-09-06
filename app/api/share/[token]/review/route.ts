@@ -4,7 +4,13 @@ import type { ClientApproval } from '@/lib/types';
 
 type Params = { params: Promise<{ token: string }> };
 
-const STATUSES: ClientApproval[] = ['pending', 'approved', 'changes_requested'];
+const STATUSES: ClientApproval[] = [
+  'pending',
+  'approved',
+  'approved_with_changes',
+  'changes_requested',
+  'not_relevant',
+];
 
 /** "Client signed off on this stand" - set from the share view, read by the owner. */
 export async function POST(request: Request, { params }: Params) {
