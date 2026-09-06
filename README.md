@@ -105,11 +105,13 @@ photos ──▶ analyze ──▶ synthesize_views ──▶ reconstruct ──
 ```
 
 Each stage is a row in `jobs` that enqueues the next, so progress is visible and a failure
-retries from the stage that broke rather than from the photographs again. The app drains its
-own queue via `POST /api/jobs/tick` while work is outstanding; run `npm run worker` alongside
-for a standalone drainer. Claims are atomic, so several drainers can run at once — in Supabase
-mode through a guarded conditional update, and on the local disk store through an advisory
-lock around each read-modify-write.
+retries from the stage that broke rather than from the photographs again. The studio and
+workbench nudge the queue via `POST /api/jobs/tick` while they have work outstanding, which
+is enough for local development but is not the intended drainer in production — see
+[Deployment](#deployment) for `npm run worker` as an always-on process, and the zero-infra
+scheduled-trigger fallback. Claims are atomic, so several drainers can run at once — in
+Supabase mode through a guarded conditional update, and on the local disk store through an
+advisory lock around each read-modify-write.
 
 ### When things go wrong
 
@@ -129,7 +131,8 @@ queue next returns anything past its deadline to the queue — or fails it, if i
 spent. A stage that is genuinely alive keeps its claim; one that has wedged loses it.
 
 Note that with only the in-app drainer, a job backing off for 15s resumes when someone next
-has the app open. Run the standalone worker if that matters.
+has the app open — which is exactly why it isn't the intended drainer in production. See
+[Deployment](#deployment).
 
 ### The local disk store and concurrency
 
@@ -210,6 +213,76 @@ history reads as a chain.
 
 ---
 
+## Deployment
+
+Reconstruction is the stage most likely to run for minutes, and it's the one people most want
+to walk away from — so the queue needs something draining it that isn't "a browser tab happens
+to be open." Pick one of the two below for a real deployment; `POST /api/jobs/tick` (above)
+stays around as a same-process convenience, not a substitute.
+
+### An always-on worker (the intended way)
+
+`npm run worker` (`scripts/worker.ts`) polls `drainJobs` in a loop until it's stopped. Run it as
+its own long-running process alongside the web app, not as a request handler:
+
+- **Railway** — add a second service from the same repo/image with the start command
+  `npm run worker` instead of `npm run start`. It needs the same environment variables as the
+  web service (`SUPABASE_SERVICE_ROLE_KEY` in particular — the worker writes as the service
+  role, not a signed-in user) but no public domain.
+- **systemd** — a plain unit works:
+  ```ini
+  [Unit]
+  Description=ai3drender queue worker
+  After=network.target
+
+  [Service]
+  WorkingDirectory=/opt/ai3drender
+  EnvironmentFile=/opt/ai3drender/.env
+  ExecStart=/usr/bin/npm run worker
+  Restart=on-failure
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+- **A container** — build the same image as the web app and override its command to
+  `npm run worker` for a second container/task instead of `npm run start`. Any platform that
+  lets you run two services from one image (Railway, Fly, ECS, a k8s Deployment, docker-compose)
+  works the same way: one process serves HTTP, the other runs the loop.
+
+Since claims are atomic, running the worker *and* leaving the in-app poll in place is safe —
+either one might pick up a given job, never both.
+
+### Zero-infrastructure fallback: a scheduled trigger
+
+For a small or serverless deployment where running a second process is the friction you're
+trying to avoid, point a scheduler at `/api/jobs/tick` instead. The route accepts a scheduled
+call without a signed-in user when it carries `Authorization: Bearer $CRON_SECRET` — set
+`CRON_SECRET` in your environment to turn this on (see `.env.example`); unset, that branch is
+simply never taken and the route still requires a session, same as before.
+
+- **Vercel Cron** — `vercel.json` in this repo already declares
+  `{ "path": "/api/jobs/tick", "schedule": "*/5 * * * *" }`. Set `CRON_SECRET` as a project
+  environment variable and Vercel signs its own cron requests with it automatically (it appends
+  `Authorization: Bearer $CRON_SECRET` for you) — nothing else to wire up. **Caveat:** the
+  Hobby plan only runs cron jobs once a day regardless of the schedule you configure; a `*/5`
+  schedule needs a Pro (or higher) plan to actually fire every five minutes. On Hobby, either
+  upgrade or use an external cron service below for anything more frequent than daily.
+- **An external cron service** (cron-job.org, GitHub Actions' `schedule:` trigger, etc.) — have
+  it send `POST https://<your-app>/api/jobs/tick` with header
+  `Authorization: Bearer <CRON_SECRET>` on whatever interval you like. This works on any host,
+  including Hobby-tier Vercel, since the scheduling happens outside the app entirely.
+
+**What this PR could and couldn't verify locally:** the standalone worker was run and confirmed
+to drain a real job end-to-end against `LocalStore` (see the PR description). The
+`CRON_SECRET` bearer-auth branch on `/api/jobs/tick` was exercised directly with `curl` against
+a running `next start`. Neither a real Vercel Cron firing nor an external cron service actually
+calling a deployed URL was — that requires a live Vercel deployment and public domain, which
+this sandbox doesn't have; wiring correctness there rests on Vercel's documented cron-request
+behavior (it sends the `Authorization` header itself when `CRON_SECRET` is set), not on an
+end-to-end test.
+
+---
+
 ## The studio
 
 `/projects/[id]/scenes/[id]` is a react-three-fiber viewport: five booth presets, HDRI-based
@@ -229,7 +302,7 @@ Export strips helpers (grid, selection cages, gizmos) and serialises the booth a
 ```
 app/                     routes and API handlers
 app/sign-in, app/auth/   sign-in page, magic-link callback, sign-out
-middleware.ts            refreshes auth cookies and gates protected routes
+proxy.ts                 refreshes auth cookies and gates protected routes
 components/studio/       viewport, outliner, inspector
 lib/
   ai/gemini.ts           analysis, view synthesis, art direction, refinement

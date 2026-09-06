@@ -59,6 +59,8 @@ export async function POST(request: Request, { params }: Params) {
       await store.createAnnotation({
         assetId: asset.id,
         assetVersionId: version.id,
+        originVersionId: version.id,
+        originVersionNumber: version.versionNumber,
         sceneId: body.sceneId ?? null,
         point: body.point,
         normal: isVec3(body.normal) ? body.normal : { x: 0, y: 1, z: 0 },
@@ -67,6 +69,9 @@ export async function POST(request: Request, { params }: Params) {
         componentRole,
         anchorDescription: describeAnchor(body.point, version.spec.dimensions),
         body: body.body.trim(),
+        source: 'internal',
+        clientName: null,
+        staleNote: null,
       }),
       201,
     );

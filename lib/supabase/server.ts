@@ -41,3 +41,23 @@ export function createSupabaseAdminClient(): SupabaseClient {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }
+
+/**
+ * Anonymous client carrying a scene share token as a request header.
+ *
+ * There is no Supabase auth session behind a share link - the recipient never
+ * signs in - so this is the anon key, unlike every other server client here.
+ * What stands in for a session is the `x-scene-share-token` header: RLS reads
+ * it back out via PostgREST's `request.headers` GUC (see
+ * `active_share_scene_id()` in supabase/migrations/0008_client_review_links.sql)
+ * and resolves it to a grant, the same way a JWT would resolve to a user.
+ */
+export function createSupabaseShareClient(token: string): SupabaseClient {
+  if (!env.supabaseUrl || !env.supabaseAnonKey) {
+    throw new Error('Supabase is not configured');
+  }
+  return createClient(env.supabaseUrl, env.supabaseAnonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { 'x-scene-share-token': token } },
+  });
+}

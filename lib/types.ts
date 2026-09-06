@@ -85,6 +85,24 @@ export interface MaterialSpec {
   /** Human-readable finish, e.g. "brushed", "oiled walnut", "powder-coated". */
   finish: string;
   notes: string;
+  /**
+   * Set when this material is bound to a MaterialLibraryEntry - either because
+   * the vision pass matched it against the account's known materials, or
+   * because a human rebound it afterwards. While bound, every PBR field above
+   * is kept in sync with the library entry's canonical values, so every piece
+   * bound to the same entry renders identically instead of each drifting
+   * slightly on its own. Null (or absent, on specs recorded before this field
+   * existed) for an ad hoc, per-version material with no library counterpart.
+   */
+  libraryEntryId?: string | null;
+  /**
+   * True when the vision pass had library candidates to check against but
+   * found no match, so it invented this material fresh. Surfaced in the UI so
+   * a human can review it and, optionally, promote it into the library.
+   * Always false once libraryEntryId is set. Optional/absent on specs
+   * recorded before this field existed - treated the same as false.
+   */
+  invented?: boolean;
 }
 
 /** A named sub-part of the piece, used to drive per-part material assignment. */
@@ -125,6 +143,47 @@ export interface FurnitureSpec {
   symmetry: 'bilateral' | 'radial' | 'none';
   /** Guidance passed verbatim into the mesh vendor's prompt. */
   reconstructionNotes: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Shared material library                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One real material a manufacturer actually uses - a named timber, fabric,
+ * powder-coat colour or finish, with fixed PBR values - kept apart from any
+ * single piece so the same oak reads identically on every product it appears
+ * on.
+ *
+ * Scoped by `ownerId` (account-level) rather than by project: a manufacturer's
+ * range of finishes does not reset with every new exhibition stand, and
+ * project-scoping would fragment one catalogue across every project the same
+ * account runs. See the PR description for the full rationale.
+ */
+export interface MaterialLibraryEntry {
+  id: Uuid;
+  ownerId: string;
+  name: string;
+  /** Manufacturer SKU or internal code, e.g. "OAK-014". Null when there isn't one. */
+  code: string | null;
+  kind: MaterialKind;
+  baseColorHex: string;
+  roughness: number;
+  metalness: number;
+  sheen: number;
+  clearcoat: number;
+  finish: string;
+  notes: string;
+  /** Storage key of a reference swatch photo, resolved via store.blobUrl. */
+  swatchPath: string | null;
+  /**
+   * Set when the material is discontinued. Kept rather than deleted so past
+   * bindings and usage history stay traceable - the point of tracking usage at
+   * all is to see what a discontinued fabric affects.
+   */
+  archivedAt: IsoDate | null;
+  createdAt: IsoDate;
+  updatedAt: IsoDate;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -191,6 +250,8 @@ export interface AssetVersion {
   meshPath: string | null;
   /** Longest-axis size of the raw mesh, used to scale it to real-world mm. */
   meshExtentMm: number | null;
+  /** Storage key of a small captured PNG of the mesh, for list thumbnails. Null until one is captured. */
+  previewPath: string | null;
   provider: string;
   providerJobId: string | null;
   refinement: RefinementRequest | null;
@@ -239,7 +300,16 @@ export interface SceneNode {
   propKind: PropKind | null;
   /** Set when kind === 'light'. */
   light: SceneLight | null;
-  /** Per-node material tweaks that do not fork the underlying asset version. */
+  /**
+   * Per-node material tweaks that do not fork the underlying asset version.
+   *
+   * Keyed by `MaterialSpec.id` (stable across a refinement even when the
+   * material's display name changes), except for a prop node's single entry
+   * which lives under the literal key `"prop"`. A key that matches neither a
+   * live id nor the mesh's own material name (a vendor mesh with names we do
+   * not control) is left in place rather than silently dropped - see
+   * `lib/scene/materialOverrides.ts`.
+   */
   materialOverrides: Record<string, Partial<MaterialSpec>>;
 }
 
@@ -284,6 +354,14 @@ export interface SceneDoc {
   nodes: SceneNode[];
 }
 
+/**
+ * Where a client's review of a shared scene stands.
+ *
+ * Set only through the read-only share view (`/share/[token]`) - the owner
+ * never sets this directly, it is what the client told them.
+ */
+export type ClientApproval = 'pending' | 'approved' | 'changes_requested';
+
 export interface Scene {
   id: Uuid;
   projectId: Uuid;
@@ -292,8 +370,31 @@ export interface Scene {
   /** Art direction produced by Gemini for this scene, kept for traceability. */
   direction: SceneDirection | null;
   acceptedAt: IsoDate | null;
+  /** "Client signed off on this stand" - set from the share view, read here. */
+  clientApproval: ClientApproval;
+  clientApprovalAt: IsoDate | null;
+  /** The name the client typed into the share view when they set the verdict. */
+  clientApprovalName: string | null;
+  /** Free-text reason, mainly useful when changes were requested. */
+  clientApprovalNote: string | null;
+  /**
+   * Bumped every time `doc` is saved. The studio round-trips whatever value
+   * it loaded back with the next save so the server can tell a stale write
+   * from a fresh one - see `Store.updateScene` and `SceneConflictError`.
+   */
+  version: number;
   createdAt: IsoDate;
   updatedAt: IsoDate;
+}
+
+/** One retained save of a scene's `doc`, going back to its creation. */
+export interface SceneVersion {
+  id: Uuid;
+  sceneId: Uuid;
+  versionNumber: number;
+  doc: SceneDoc;
+  note: string;
+  createdAt: IsoDate;
 }
 
 /** Gemini's art-direction pass over a booth brief. */
@@ -372,11 +473,35 @@ export type AnnotationStatus = 'open' | 'applied' | 'dismissed';
  * The anchor is stored in the ASSET's local space, not world space, so a note
  * survives the piece being moved, rotated or restaged in another booth.
  */
+/**
+ * Who pinned a note.
+ *
+ * 'internal' notes come from an authenticated studio user; 'client' notes
+ * come through a scene share link, from someone with no account at all. Kept
+ * distinct so the review panel can badge them and the model prompt can weigh
+ * them differently if that ever matters.
+ */
+export type AnnotationSource = 'internal' | 'client';
+
 export interface Annotation {
   id: Uuid;
   assetId: Uuid;
-  /** The version the note was made against. */
+  /**
+   * The version this note is currently pinned to. For a fresh note this is
+   * the version it was made against; a note still `open` when its version is
+   * superseded is re-pointed here at the newest version instead of going
+   * stale on the old one (see `refine` in lib/pipeline/index.ts).
+   */
   assetVersionId: Uuid;
+  /**
+   * The version this note was originally pinned on. Set once at creation and
+   * never touched again, so a note carried forward across several rounds can
+   * still read "since v1" even though `assetVersionId` has long since moved
+   * on. Paired with `originVersionNumber` so the UI can show that without an
+   * extra lookup for a version that may no longer be loaded.
+   */
+  originVersionId: Uuid;
+  originVersionNumber: number;
   /** Scene the note was taken in, for traceability. Null if made elsewhere. */
   sceneId: Uuid | null;
   /** Anchor in the asset's local space, metres. */
@@ -396,8 +521,52 @@ export interface Annotation {
   anchorDescription: string;
   body: string;
   status: AnnotationStatus;
+  source: AnnotationSource;
+  /** Free-text name typed into the share view. Null for internal notes. */
+  clientName: string | null;
   /** The version created in response to this note. */
   resolvedByVersionId: Uuid | null;
+  /**
+   * Set only when this note was carried forward to a newer version and its
+   * anchor could not be cleanly reconciled with that version's spec - either
+   * the part it named no longer resolves to a component (renamed, merged or
+   * removed), or the anchor point now falls outside the piece's bounding box.
+   * Null otherwise, including for notes that have never been carried
+   * forward. The pin itself, its position and its `open` status are left
+   * alone; this is only a heads-up that its context may be stale.
+   */
+  staleNote: string | null;
+  createdAt: IsoDate;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Client review share links                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A tokenized, read-only grant onto one scene.
+ *
+ * This is deliberately shaped as a grant on a resource rather than as
+ * something link-specific: `resourceType`/`resourceId` name what is shared,
+ * `granteeToken` (hashed, never stored in clear) names who holds it. A future
+ * team-access feature can reuse the same shape with a `granteeUserId` instead
+ * of a token and a broader role, without redesigning this table. See the
+ * migration and PR description for the full reasoning.
+ */
+export type ShareRole = 'viewer' | 'commenter';
+
+export interface SceneShareLink {
+  id: Uuid;
+  sceneId: Uuid;
+  /** Viewer id of whoever generated the link. */
+  createdBy: string;
+  /** Always 'commenter' today - clients can pin notes and set approval. */
+  role: ShareRole;
+  /** Optional owner-set label, e.g. "Acme Corp - first pass". */
+  label: string | null;
+  expiresAt: IsoDate | null;
+  revokedAt: IsoDate | null;
+  lastAccessedAt: IsoDate | null;
   createdAt: IsoDate;
 }
 

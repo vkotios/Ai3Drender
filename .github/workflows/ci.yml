@@ -33,6 +33,13 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Unit tests run offline: no GEMINI_API_KEY, no Supabase, MESH_PROVIDER
+      # unset (stub). The SupabaseStore conformance suite skips itself unless
+      # SUPABASE_TEST_URL/SUPABASE_TEST_SERVICE_ROLE_KEY point at a real
+      # project - neither is set here, so it is skipped, not run.
+      - name: Test
+        run: npm test
+
       # Deliberately built with no secrets: the app is designed to boot on an
       # empty environment (local disk store, offline analyzer, stub mesh
       # provider). Needing a key to build would be a regression, and this step
@@ -53,14 +60,16 @@ jobs:
 
       - run: npm ci
 
-      # Gated at critical rather than high on purpose. Two high advisories
-      # (postcss and sharp, both transitive via next) have no fix below a
-      # semver-major move to Next 16 and are tracked in #18. Gating at high
-      # would leave CI permanently red, which trains people to ignore it.
+      # Gated at critical rather than high on principle, not because
+      # anything is currently outstanding: as of the Next 16 upgrade (#18)
+      # `npm audit` reports zero vulnerabilities at any level. Keeping the
+      # gate at critical (rather than tightening to zero-tolerance) avoids
+      # a future moderate/high advisory with no immediate fix leaving CI
+      # permanently red, which trains people to ignore it.
       - name: Fail on critical advisories
         run: npm audit --audit-level=critical
 
-      # Informational: surfaces the moderate and high findings in the log
+      # Informational: surfaces any moderate and high findings in the log
       # without blocking the run.
       - name: Report all advisories
         if: always()

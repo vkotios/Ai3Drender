@@ -40,6 +40,11 @@ export const env = {
   blenderTimeoutMs: Number(clean(process.env.BLENDER_TIMEOUT_MS)) || 20 * 60_000,
   /** 'CPU' everywhere by default; set 'GPU' on a worker with a configured Cycles device. */
   blenderDevice: (clean(process.env.BLENDER_DEVICE) ?? 'CPU').toUpperCase(),
+
+  // Lets a scheduled trigger (Vercel Cron, or any external cron service) call
+  // POST /api/jobs/tick without a signed-in session. Unset => that route only
+  // accepts the studio's own authenticated poll, same as before this existed.
+  cronSecret: clean(process.env.CRON_SECRET),
 } as const;
 
 /** True when Supabase is configured; otherwise the on-disk LocalStore is used. */

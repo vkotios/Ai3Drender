@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import lockfile from 'proper-lockfile';
@@ -11,25 +11,33 @@ import type {
   FurnitureAsset,
   Job,
   JobStatus,
+  MaterialLibraryEntry,
   Project,
   Scene,
-  SceneDoc,
   SceneRender,
+  SceneShareLink,
+  SceneVersion,
   SourceImage,
   Uuid,
 } from '@/lib/types';
+import { generateShareToken, hashShareToken } from '@/lib/share/token';
 import type {
   Blob,
+  MaterialLibraryEntryPatch,
+  MaterialLibraryUsage,
   NewAnnotation,
   NewAsset,
   NewAssetVersion,
   NewJob,
+  NewMaterialLibraryEntry,
   NewSceneRender,
   NewProject,
   NewScene,
+  NewShareLink,
   NewSourceImage,
   Store,
 } from './store';
+import { SceneConflictError } from './store';
 
 interface Db {
   projects: Project[];
@@ -37,10 +45,12 @@ interface Db {
   assets: FurnitureAsset[];
   assetVersions: AssetVersion[];
   scenes: Scene[];
-  sceneVersions: { id: string; sceneId: string; versionNumber: number; doc: SceneDoc; note: string; createdAt: string }[];
+  sceneVersions: SceneVersion[];
   jobs: Job[];
   annotations: Annotation[];
   sceneRenders: SceneRender[];
+  shareLinks: (SceneShareLink & { tokenHash: string })[];
+  materialLibraryEntries: MaterialLibraryEntry[];
 }
 
 const EMPTY: Db = {
@@ -53,11 +63,11 @@ const EMPTY: Db = {
   jobs: [],
   annotations: [],
   sceneRenders: [],
+  shareLinks: [],
+  materialLibraryEntries: [],
 };
 
-const ROOT = path.join(process.cwd(), 'storage-local');
-const DB_FILE = path.join(ROOT, 'db.json');
-const BLOB_DIR = path.join(ROOT, 'blobs');
+const DEFAULT_ROOT = path.join(process.cwd(), 'storage-local');
 
 const now = () => new Date().toISOString();
 
@@ -74,6 +84,21 @@ const DEFAULT_LEASE_MS = 5 * 60_000;
  * does not wedge the dev server for long.
  */
 const LOCK_STALE_MS = 10_000;
+
+/** Never let the token hash leave the store - callers only ever see the row. */
+function toPublicShareLink(link: SceneShareLink & { tokenHash: string }): SceneShareLink {
+  return {
+    id: link.id,
+    sceneId: link.sceneId,
+    createdBy: link.createdBy,
+    role: link.role,
+    label: link.label,
+    expiresAt: link.expiresAt,
+    revokedAt: link.revokedAt,
+    lastAccessedAt: link.lastAccessedAt,
+    createdAt: link.createdAt,
+  };
+}
 
 /**
  * Development store. Everything lives in one JSON file plus a blob directory.
@@ -99,11 +124,26 @@ const LOCK_STALE_MS = 10_000;
 export class LocalStore implements Store {
   readonly kind = 'local' as const;
 
+  private readonly root: string;
+  private readonly dbFile: string;
+  private readonly blobDir: string;
+
   private queue: Promise<unknown> = Promise.resolve();
+
+  /**
+   * @param root Where the database file and blob directory live. Defaults to
+   * `<cwd>/storage-local`. Overridable so tests (and any other embedder) can
+   * point at an isolated directory instead of the real dev store.
+   */
+  constructor(root: string = DEFAULT_ROOT) {
+    this.root = root;
+    this.dbFile = path.join(root, 'db.json');
+    this.blobDir = path.join(root, 'blobs');
+  }
 
   private async read(): Promise<Db> {
     try {
-      const raw = await readFile(DB_FILE, 'utf8');
+      const raw = await readFile(this.dbFile, 'utf8');
       return { ...EMPTY, ...(JSON.parse(raw) as Partial<Db>) };
     } catch {
       return structuredClone(EMPTY);
@@ -119,8 +159,8 @@ export class LocalStore implements Store {
    * takes it over.
    */
   private async withFileLock<T>(fn: () => Promise<T>): Promise<T> {
-    await mkdir(ROOT, { recursive: true });
-    const release = await lockfile.lock(DB_FILE, {
+    await mkdir(this.root, { recursive: true });
+    const release = await lockfile.lock(this.dbFile, {
       realpath: false,
       stale: LOCK_STALE_MS,
       // Roughly five seconds of patience, which comfortably covers another
@@ -143,9 +183,9 @@ export class LocalStore implements Store {
         const db = await this.read();
         const result = await fn(db);
         // The pid keeps two processes from colliding on the same temp path.
-        const tmp = `${DB_FILE}.${process.pid}.tmp`;
+        const tmp = `${this.dbFile}.${process.pid}.tmp`;
         await writeFile(tmp, JSON.stringify(db, null, 2), 'utf8');
-        await rename(tmp, DB_FILE);
+        await rename(tmp, this.dbFile);
         return result;
       }),
     );
@@ -193,8 +233,8 @@ export class LocalStore implements Store {
     });
   }
 
-  deleteProject(id: Uuid): Promise<void> {
-    return this.mutate((db) => {
+  async deleteProject(id: Uuid): Promise<void> {
+    await this.mutate((db) => {
       const assetIds = db.assets.filter((a) => a.projectId === id).map((a) => a.id);
       const sceneIds = db.scenes.filter((s) => s.projectId === id).map((s) => s.id);
       db.projects = db.projects.filter((p) => p.id !== id);
@@ -206,6 +246,13 @@ export class LocalStore implements Store {
       db.jobs = db.jobs.filter((j) => j.projectId !== id);
       db.annotations = db.annotations.filter((a) => !assetIds.includes(a.assetId));
       db.sceneRenders = db.sceneRenders.filter((r) => r.projectId !== id);
+      db.shareLinks = db.shareLinks.filter((l) => !sceneIds.includes(l.sceneId));
+    });
+    // Every blob for this project lives under one prefix. A stranded file is
+    // better than a project whose row delete failed because storage hiccuped,
+    // so this is best-effort: log and move on.
+    await this.deleteBlobPrefix(id).catch((cause) => {
+      console.error(`[store] deleteProject: failed to remove blobs for project ${id}`, cause);
     });
   }
 
@@ -234,9 +281,15 @@ export class LocalStore implements Store {
       .filter((i): i is SourceImage => Boolean(i));
   }
 
-  deleteSourceImage(id: Uuid): Promise<void> {
-    return this.mutate((db) => {
+  async deleteSourceImage(id: Uuid): Promise<void> {
+    const image = await this.mutate((db) => {
+      const found = db.sourceImages.find((i) => i.id === id) ?? null;
       db.sourceImages = db.sourceImages.filter((i) => i.id !== id);
+      return found;
+    });
+    if (!image) return;
+    await this.deleteBlob(image.path).catch((cause) => {
+      console.error(`[store] deleteSourceImage: failed to remove blob ${image.path}`, cause);
     });
   }
 
@@ -271,12 +324,30 @@ export class LocalStore implements Store {
     });
   }
 
-  deleteAsset(id: Uuid): Promise<void> {
-    return this.mutate((db) => {
+  async deleteAsset(id: Uuid): Promise<void> {
+    const removedVersions = await this.mutate((db) => {
+      const versions = db.assetVersions.filter((v) => v.assetId === id);
       db.assets = db.assets.filter((a) => a.id !== id);
       db.assetVersions = db.assetVersions.filter((v) => v.assetId !== id);
       db.annotations = db.annotations.filter((a) => a.assetId !== id);
+      return versions;
     });
+    // Every synthesized view and the reconstructed mesh carry their own
+    // storage key on the version row, so no path convention needs guessing.
+    // A `fromSource` view is not one of them: analysis points it straight at
+    // the project's own source-image blob rather than copying it, and that
+    // blob is only ever the source image row's to delete.
+    const keys = removedVersions.flatMap((v) => [
+      ...v.views.filter((view) => !view.fromSource).map((view) => view.path),
+      ...(v.meshPath ? [v.meshPath] : []),
+    ]);
+    await Promise.all(
+      keys.map((key) =>
+        this.deleteBlob(key).catch((cause) => {
+          console.error(`[store] deleteAsset: failed to remove blob ${key}`, cause);
+        }),
+      ),
+    );
   }
 
   /* Asset versions --------------------------------------------------------- */
@@ -325,6 +396,11 @@ export class LocalStore implements Store {
         doc: input.doc,
         direction: input.direction ?? null,
         acceptedAt: null,
+        clientApproval: 'pending',
+        clientApprovalAt: null,
+        clientApprovalName: null,
+        clientApprovalNote: null,
+        version: 1,
         createdAt: now(),
         updatedAt: now(),
       };
@@ -353,19 +429,28 @@ export class LocalStore implements Store {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
-  updateScene(id: Uuid, patch: Partial<Scene>, note = ''): Promise<Scene> {
+  updateScene(
+    id: Uuid,
+    patch: Partial<Scene>,
+    note = '',
+    expectedVersion?: number,
+  ): Promise<Scene> {
     return this.mutate((db) => {
       const scene = db.scenes.find((s) => s.id === id);
       if (!scene) throw new Error(`scene ${id} not found`);
+      // Checked (and the write rejected) only for content-changing saves with
+      // a version the caller actually loaded - background jobs and restores
+      // pass no expectedVersion and always win.
+      if (patch.doc !== undefined && expectedVersion !== undefined && scene.version !== expectedVersion) {
+        throw new SceneConflictError(scene);
+      }
       Object.assign(scene, patch, { updatedAt: now() });
-      if (patch.doc) {
-        const highest = db.sceneVersions
-          .filter((v) => v.sceneId === id)
-          .reduce((max, v) => Math.max(max, v.versionNumber), 0);
+      if (patch.doc !== undefined) {
+        scene.version += 1;
         db.sceneVersions.push({
           id: randomUUID(),
           sceneId: id,
-          versionNumber: highest + 1,
+          versionNumber: scene.version,
           doc: patch.doc,
           note,
           createdAt: now(),
@@ -375,12 +460,92 @@ export class LocalStore implements Store {
     });
   }
 
-  deleteScene(id: Uuid): Promise<void> {
-    return this.mutate((db) => {
+  async deleteScene(id: Uuid): Promise<void> {
+    const scene = await this.mutate((db) => {
+      const found = db.scenes.find((s) => s.id === id) ?? null;
       db.scenes = db.scenes.filter((s) => s.id !== id);
       db.sceneVersions = db.sceneVersions.filter((v) => v.sceneId !== id);
       db.sceneRenders = db.sceneRenders.filter((r) => r.sceneId !== id);
+      db.shareLinks = db.shareLinks.filter((l) => l.sceneId !== id);
+      return found;
     });
+    if (!scene) return;
+    // One prefix covers every pathtraced/concept render for this scene, plus
+    // any viewport capture a crashed concept-render job never cleaned up.
+    await this.deleteBlobPrefix(`${scene.projectId}/renders/${scene.id}`).catch((cause) => {
+      console.error(`[store] deleteScene: failed to remove render blobs for scene ${id}`, cause);
+    });
+  }
+
+  /* Scene share links ------------------------------------------------------ */
+
+  createShareLink(input: NewShareLink): Promise<{ link: SceneShareLink; token: string }> {
+    return this.mutate((db) => {
+      const token = generateShareToken();
+      const link: SceneShareLink & { tokenHash: string } = {
+        id: randomUUID(),
+        sceneId: input.sceneId,
+        createdBy: input.createdBy,
+        role: input.role ?? 'commenter',
+        label: input.label ?? null,
+        expiresAt: input.expiresAt ?? null,
+        revokedAt: null,
+        lastAccessedAt: null,
+        createdAt: now(),
+        tokenHash: hashShareToken(token),
+      };
+      db.shareLinks.push(link);
+      return { link: toPublicShareLink(link), token };
+    });
+  }
+
+  async listShareLinks(sceneId: Uuid): Promise<SceneShareLink[]> {
+    const db = await this.read();
+    return db.shareLinks
+      .filter((l) => l.sceneId === sceneId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(toPublicShareLink);
+  }
+
+  async getShareLink(id: Uuid): Promise<SceneShareLink | null> {
+    const db = await this.read();
+    const link = db.shareLinks.find((l) => l.id === id);
+    return link ? toPublicShareLink(link) : null;
+  }
+
+  async getShareLinkByToken(token: string): Promise<SceneShareLink | null> {
+    const db = await this.read();
+    const hash = hashShareToken(token);
+    const link = db.shareLinks.find((l) => l.tokenHash === hash);
+    return link ? toPublicShareLink(link) : null;
+  }
+
+  revokeShareLink(id: Uuid): Promise<SceneShareLink> {
+    return this.mutate((db) => {
+      const link = db.shareLinks.find((l) => l.id === id);
+      if (!link) throw new Error(`share link ${id} not found`);
+      link.revokedAt ??= now();
+      return toPublicShareLink(link);
+    });
+  }
+
+  touchShareLink(id: Uuid): Promise<void> {
+    return this.mutate((db) => {
+      const link = db.shareLinks.find((l) => l.id === id);
+      if (link) link.lastAccessedAt = now();
+    });
+  }
+
+  async listSceneVersions(sceneId: Uuid): Promise<SceneVersion[]> {
+    const db = await this.read();
+    return db.sceneVersions
+      .filter((v) => v.sceneId === sceneId)
+      .sort((a, b) => b.versionNumber - a.versionNumber);
+  }
+
+  async getSceneVersion(sceneId: Uuid, versionNumber: number): Promise<SceneVersion | null> {
+    const db = await this.read();
+    return db.sceneVersions.find((v) => v.sceneId === sceneId && v.versionNumber === versionNumber) ?? null;
   }
 
   /* Jobs ------------------------------------------------------------------- */
@@ -565,8 +730,8 @@ export class LocalStore implements Store {
   private blobPath(key: string): string {
     // Keys are app-generated (`<project>/<kind>/<uuid>.<ext>`), but refuse to
     // escape the blob root regardless.
-    const resolved = path.resolve(BLOB_DIR, key);
-    if (!resolved.startsWith(BLOB_DIR + path.sep)) {
+    const resolved = path.resolve(this.blobDir, key);
+    if (!resolved.startsWith(this.blobDir + path.sep)) {
       throw new Error(`illegal blob key: ${key}`);
     }
     return resolved;
@@ -599,8 +764,127 @@ export class LocalStore implements Store {
     await rm(`${file}.type`, { force: true });
   }
 
+  async deleteBlobPrefix(prefix: string): Promise<void> {
+    // Keys are laid out as directories (`<project>/<kind>/...`), so a prefix
+    // is just a subtree of blobDir; `blobPath` also refuses one that escapes
+    // it, including an empty prefix that would otherwise resolve to the root.
+    await rm(this.blobPath(prefix), { recursive: true, force: true });
+  }
+
+  async listBlobKeys(prefix = ''): Promise<string[]> {
+    const start = prefix ? this.blobPath(prefix) : this.blobDir;
+    return this.walkBlobDir(start);
+  }
+
+  private async walkBlobDir(dir: string): Promise<string[]> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const keys: string[] = [];
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        keys.push(...(await this.walkBlobDir(full)));
+      } else if (!entry.name.endsWith('.type')) {
+        // Every blob key uses '/' regardless of host OS.
+        keys.push(path.relative(this.blobDir, full).split(path.sep).join('/'));
+      }
+    }
+    return keys;
+  }
+
   async blobUrl(key: string): Promise<string> {
     // Served by app/api/blob/[...key]/route.ts.
     return `/api/blob/${key.split('/').map(encodeURIComponent).join('/')}`;
+  }
+
+  /* Material library --------------------------------------------------------- */
+
+  createMaterialLibraryEntry(input: NewMaterialLibraryEntry): Promise<MaterialLibraryEntry> {
+    return this.mutate((db) => {
+      const entry: MaterialLibraryEntry = {
+        ...input,
+        id: randomUUID(),
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      db.materialLibraryEntries.push(entry);
+      return entry;
+    });
+  }
+
+  async getMaterialLibraryEntry(id: Uuid): Promise<MaterialLibraryEntry | null> {
+    const db = await this.read();
+    return db.materialLibraryEntries.find((e) => e.id === id) ?? null;
+  }
+
+  async listMaterialLibraryEntries(
+    ownerId: string,
+    options?: { includeArchived?: boolean },
+  ): Promise<MaterialLibraryEntry[]> {
+    const db = await this.read();
+    return db.materialLibraryEntries
+      .filter((e) => e.ownerId === ownerId && (options?.includeArchived || !e.archivedAt))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  updateMaterialLibraryEntry(
+    id: Uuid,
+    patch: MaterialLibraryEntryPatch,
+  ): Promise<MaterialLibraryEntry> {
+    return this.mutate((db) => {
+      const entry = db.materialLibraryEntries.find((e) => e.id === id);
+      if (!entry) throw new Error(`material library entry ${id} not found`);
+      Object.assign(entry, patch, { updatedAt: now() });
+      return entry;
+    });
+  }
+
+  deleteMaterialLibraryEntry(id: Uuid): Promise<void> {
+    return this.mutate((db) => {
+      db.materialLibraryEntries = db.materialLibraryEntries.filter((e) => e.id !== id);
+    });
+  }
+
+  async listMaterialLibraryUsage(
+    ownerId: string,
+    libraryEntryId: Uuid,
+  ): Promise<MaterialLibraryUsage[]> {
+    const db = await this.read();
+    const ownedProjectIds = new Set(
+      db.projects.filter((p) => p.ownerId === ownerId).map((p) => p.id),
+    );
+
+    const usage: MaterialLibraryUsage[] = [];
+    for (const asset of db.assets) {
+      if (!ownedProjectIds.has(asset.projectId)) continue;
+      const project = db.projects.find((p) => p.id === asset.projectId);
+      if (!project) continue;
+
+      for (const version of db.assetVersions) {
+        if (version.assetId !== asset.id) continue;
+        for (const material of version.spec.materials) {
+          if (material.libraryEntryId !== libraryEntryId) continue;
+          usage.push({
+            projectId: project.id,
+            projectName: project.name,
+            assetId: asset.id,
+            assetName: asset.name,
+            assetVersionId: version.id,
+            versionNumber: version.versionNumber,
+            isCurrentVersion: asset.currentVersionId === version.id,
+            materialId: material.id,
+            materialName: material.name,
+            components: version.spec.components
+              .filter((c) => c.materialId === material.id)
+              .map((c) => ({ name: c.name, role: c.role })),
+          });
+        }
+      }
+    }
+    return usage;
   }
 }

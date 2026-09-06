@@ -12,4 +12,5 @@ export const storageKeys = {
   render: (projectId: string, sceneId: string, kind: string, ext: string) =>
     `${projectId}/renders/${sceneId}/${kind}-${randomUUID()}.${ext}`,
   mesh: (projectId: string, versionId: string) => `${projectId}/meshes/${versionId}.glb`,
+  preview: (projectId: string, versionId: string) => `${projectId}/previews/${versionId}.png`,
 };
