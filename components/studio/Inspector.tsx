@@ -3,12 +3,15 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { ConfidenceBadge } from '@/components/ConfidenceBadge';
-import { Badge, Field, Panel, Slider, TextInput } from '@/components/ui';
+import { Badge, Button, Field, Panel, Slider, TextInput } from '@/components/ui';
+import { createAssetNode, createSceneDoc } from '@/lib/scene/defaults';
 import { overlappingNodeNames } from '@/lib/scene/collisions';
 import { orphanedOverrideKeys } from '@/lib/scene/materialOverrides';
 import { BOOTH_PRESETS, PROP_DEFINITIONS, getPreset } from '@/lib/scene/presets';
-import { useStudio } from '@/lib/studio/store';
+import { useStudio, type LoadedVersion } from '@/lib/studio/store';
 import type { AssetVersion, SceneNode } from '@/lib/types';
+
+import { SplitCompareOverlay } from './CompareViewport';
 
 const DEG = 180 / Math.PI;
 
@@ -316,6 +319,7 @@ function VersionComparePanel({
   const [error, setError] = useState<string | null>(null);
   const [aId, setAId] = useState<string | null>(null);
   const [bId, setBId] = useState<string | null>(null);
+  const [splitOpen, setSplitOpen] = useState(false);
 
   useEffect(() => {
     if (!assetId) return;
@@ -355,6 +359,8 @@ function VersionComparePanel({
   if (!assetId) return null;
 
   const showing = currentVersionId === bId ? 'B' : currentVersionId === aId ? 'A' : null;
+  const optionA = options?.find((o) => o.version.id === aId) ?? null;
+  const optionB = options?.find((o) => o.version.id === bId) ?? null;
 
   return (
     <Panel title="Compare versions">
@@ -392,10 +398,44 @@ function VersionComparePanel({
             Same spot, same camera - only the mesh and materials swap. Save to keep whichever one
             you land on, or reload the stand to discard the swap.
           </p>
+
+          <Button
+            size="sm"
+            className="w-full"
+            disabled={aId === bId}
+            onClick={() => setSplitOpen(true)}
+          >
+            Compare side by side ▸
+          </Button>
         </div>
+      )}
+
+      {splitOpen && optionA && optionB && (
+        <SplitCompareOverlay
+          title="Comparing mesh versions"
+          onClose={() => setSplitOpen(false)}
+          left={{
+            label: `Version ${optionA.version.versionNumber}`,
+            sublabel: optionA.version.acceptedAt ? 'accepted' : undefined,
+            doc: buildIsolatedDoc(optionA),
+            versions: { [optionA.version.id]: optionA },
+          }}
+          right={{
+            label: `Version ${optionB.version.versionNumber}`,
+            sublabel: optionB.version.acceptedAt ? 'accepted' : undefined,
+            doc: buildIsolatedDoc(optionB),
+            versions: { [optionB.version.id]: optionB },
+          }}
+        />
       )}
     </Panel>
   );
+}
+
+/** A standalone one-piece stand, so a version can be viewed apart from any scene. */
+function buildIsolatedDoc(option: LoadedVersion) {
+  const doc = createSceneDoc();
+  return { ...doc, nodes: [createAssetNode(option.version, option.version.spec.displayName)] };
 }
 
 function VersionPicker({
