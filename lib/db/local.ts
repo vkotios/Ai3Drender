@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import lockfile from 'proper-lockfile';
@@ -199,8 +199,8 @@ export class LocalStore implements Store {
     });
   }
 
-  deleteProject(id: Uuid): Promise<void> {
-    return this.mutate((db) => {
+  async deleteProject(id: Uuid): Promise<void> {
+    await this.mutate((db) => {
       const assetIds = db.assets.filter((a) => a.projectId === id).map((a) => a.id);
       const sceneIds = db.scenes.filter((s) => s.projectId === id).map((s) => s.id);
       db.projects = db.projects.filter((p) => p.id !== id);
@@ -212,6 +212,12 @@ export class LocalStore implements Store {
       db.jobs = db.jobs.filter((j) => j.projectId !== id);
       db.annotations = db.annotations.filter((a) => !assetIds.includes(a.assetId));
       db.sceneRenders = db.sceneRenders.filter((r) => r.projectId !== id);
+    });
+    // Every blob for this project lives under one prefix. A stranded file is
+    // better than a project whose row delete failed because storage hiccuped,
+    // so this is best-effort: log and move on.
+    await this.deleteBlobPrefix(id).catch((cause) => {
+      console.error(`[store] deleteProject: failed to remove blobs for project ${id}`, cause);
     });
   }
 
@@ -240,9 +246,15 @@ export class LocalStore implements Store {
       .filter((i): i is SourceImage => Boolean(i));
   }
 
-  deleteSourceImage(id: Uuid): Promise<void> {
-    return this.mutate((db) => {
+  async deleteSourceImage(id: Uuid): Promise<void> {
+    const image = await this.mutate((db) => {
+      const found = db.sourceImages.find((i) => i.id === id) ?? null;
       db.sourceImages = db.sourceImages.filter((i) => i.id !== id);
+      return found;
+    });
+    if (!image) return;
+    await this.deleteBlob(image.path).catch((cause) => {
+      console.error(`[store] deleteSourceImage: failed to remove blob ${image.path}`, cause);
     });
   }
 
@@ -277,12 +289,30 @@ export class LocalStore implements Store {
     });
   }
 
-  deleteAsset(id: Uuid): Promise<void> {
-    return this.mutate((db) => {
+  async deleteAsset(id: Uuid): Promise<void> {
+    const removedVersions = await this.mutate((db) => {
+      const versions = db.assetVersions.filter((v) => v.assetId === id);
       db.assets = db.assets.filter((a) => a.id !== id);
       db.assetVersions = db.assetVersions.filter((v) => v.assetId !== id);
       db.annotations = db.annotations.filter((a) => a.assetId !== id);
+      return versions;
     });
+    // Every synthesized view and the reconstructed mesh carry their own
+    // storage key on the version row, so no path convention needs guessing.
+    // A `fromSource` view is not one of them: analysis points it straight at
+    // the project's own source-image blob rather than copying it, and that
+    // blob is only ever the source image row's to delete.
+    const keys = removedVersions.flatMap((v) => [
+      ...v.views.filter((view) => !view.fromSource).map((view) => view.path),
+      ...(v.meshPath ? [v.meshPath] : []),
+    ]);
+    await Promise.all(
+      keys.map((key) =>
+        this.deleteBlob(key).catch((cause) => {
+          console.error(`[store] deleteAsset: failed to remove blob ${key}`, cause);
+        }),
+      ),
+    );
   }
 
   /* Asset versions --------------------------------------------------------- */
@@ -381,11 +411,19 @@ export class LocalStore implements Store {
     });
   }
 
-  deleteScene(id: Uuid): Promise<void> {
-    return this.mutate((db) => {
+  async deleteScene(id: Uuid): Promise<void> {
+    const scene = await this.mutate((db) => {
+      const found = db.scenes.find((s) => s.id === id) ?? null;
       db.scenes = db.scenes.filter((s) => s.id !== id);
       db.sceneVersions = db.sceneVersions.filter((v) => v.sceneId !== id);
       db.sceneRenders = db.sceneRenders.filter((r) => r.sceneId !== id);
+      return found;
+    });
+    if (!scene) return;
+    // One prefix covers every pathtraced/concept render for this scene, plus
+    // any viewport capture a crashed concept-render job never cleaned up.
+    await this.deleteBlobPrefix(`${scene.projectId}/renders/${scene.id}`).catch((cause) => {
+      console.error(`[store] deleteScene: failed to remove render blobs for scene ${id}`, cause);
     });
   }
 
@@ -603,6 +641,38 @@ export class LocalStore implements Store {
     const file = this.blobPath(key);
     await rm(file, { force: true });
     await rm(`${file}.type`, { force: true });
+  }
+
+  async deleteBlobPrefix(prefix: string): Promise<void> {
+    // Keys are laid out as directories (`<project>/<kind>/...`), so a prefix
+    // is just a subtree of BLOB_DIR; `blobPath` also refuses one that escapes
+    // it, including an empty prefix that would otherwise resolve to the root.
+    await rm(this.blobPath(prefix), { recursive: true, force: true });
+  }
+
+  async listBlobKeys(prefix = ''): Promise<string[]> {
+    const start = prefix ? this.blobPath(prefix) : BLOB_DIR;
+    return this.walkBlobDir(start);
+  }
+
+  private async walkBlobDir(dir: string): Promise<string[]> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const keys: string[] = [];
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        keys.push(...(await this.walkBlobDir(full)));
+      } else if (!entry.name.endsWith('.type')) {
+        // Every blob key uses '/' regardless of host OS.
+        keys.push(path.relative(BLOB_DIR, full).split(path.sep).join('/'));
+      }
+    }
+    return keys;
   }
 
   async blobUrl(key: string): Promise<string> {

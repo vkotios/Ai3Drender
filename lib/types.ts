@@ -250,6 +250,8 @@ export interface AssetVersion {
   meshPath: string | null;
   /** Longest-axis size of the raw mesh, used to scale it to real-world mm. */
   meshExtentMm: number | null;
+  /** Storage key of a small captured PNG of the mesh, for list thumbnails. Null until one is captured. */
+  previewPath: string | null;
   provider: string;
   providerJobId: string | null;
   refinement: RefinementRequest | null;
@@ -298,7 +300,16 @@ export interface SceneNode {
   propKind: PropKind | null;
   /** Set when kind === 'light'. */
   light: SceneLight | null;
-  /** Per-node material tweaks that do not fork the underlying asset version. */
+  /**
+   * Per-node material tweaks that do not fork the underlying asset version.
+   *
+   * Keyed by `MaterialSpec.id` (stable across a refinement even when the
+   * material's display name changes), except for a prop node's single entry
+   * which lives under the literal key `"prop"`. A key that matches neither a
+   * live id nor the mesh's own material name (a vendor mesh with names we do
+   * not control) is left in place rather than silently dropped - see
+   * `lib/scene/materialOverrides.ts`.
+   */
   materialOverrides: Record<string, Partial<MaterialSpec>>;
 }
 

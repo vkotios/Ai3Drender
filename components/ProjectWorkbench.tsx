@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { AssetThumbnail } from '@/components/AssetThumbnail';
 import { Badge, Button, Empty, Field, Panel, TextInput } from '@/components/ui';
 import type {
   AssetStatus,
@@ -18,6 +19,8 @@ import type {
 interface AssetRow {
   asset: FurnitureAsset;
   currentVersion: AssetVersion | null;
+  meshUrl: string | null;
+  previewUrl: string | null;
 }
 
 const BUSY_STATUSES: AssetStatus[] = ['analyzing', 'generating_views', 'reconstructing'];
@@ -157,6 +160,40 @@ export function ProjectWorkbench({
       return next;
     });
 
+  const [deletingImage, setDeletingImage] = useState<string | null>(null);
+  async function deleteImage(image: SourceImage) {
+    if (!confirm(`Delete "${image.filename}"?`)) return;
+    setDeletingImage(image.id);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/images/${image.id}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error((await response.json()).error ?? 'Could not delete');
+      setImages((current) => current.filter((i) => i.id !== image.id));
+      setSelected((current) => {
+        if (!current.has(image.id)) return current;
+        const next = new Set(current);
+        next.delete(image.id);
+        return next;
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not delete the photograph');
+    } finally {
+      setDeletingImage(null);
+    }
+  }
+
+  async function deleteScene(scene: Scene) {
+    if (!confirm(`Delete "${scene.name}"? Every render made from it goes with it.`)) return;
+    try {
+      const response = await fetch(`/api/scenes/${scene.id}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error((await response.json()).error ?? 'Could not delete');
+      setScenes((current) => current.filter((s) => s.id !== scene.id));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not delete the stand');
+    }
+  }
+
   const activeJob = jobs.find((j) => j.status === 'running' || j.status === 'queued');
 
   return (
@@ -194,7 +231,7 @@ export function ProjectWorkbench({
             ) : (
               <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                 {images.map((image) => (
-                  <li key={image.id}>
+                  <li key={image.id} className="group relative">
                     <button
                       onClick={() => toggle(image.id)}
                       className={`block w-full overflow-hidden rounded-md border-2 transition ${
@@ -212,6 +249,14 @@ export function ProjectWorkbench({
                         alt={image.filename}
                         className="aspect-square w-full bg-shell-850 object-cover"
                       />
+                    </button>
+                    <button
+                      onClick={() => deleteImage(image)}
+                      disabled={deletingImage === image.id}
+                      title="Delete photograph"
+                      className="absolute right-1 top-1 rounded bg-shell-950/80 px-1.5 py-0.5 text-[11px] text-red-300 opacity-0 transition hover:bg-red-950 group-hover:opacity-100 disabled:opacity-100"
+                    >
+                      {deletingImage === image.id ? '…' : '✕'}
                     </button>
                   </li>
                 ))}
@@ -232,6 +277,7 @@ export function ProjectWorkbench({
                     row={row}
                     libraryEntries={libraryEntries}
                     onChanged={poll}
+                    onDelete={poll}
                   />
                 ))}
               </ul>
@@ -293,16 +339,26 @@ export function ProjectWorkbench({
             ) : (
               <ul className="space-y-1.5">
                 {scenes.map((scene) => (
-                  <li key={scene.id}>
+                  <li
+                    key={scene.id}
+                    className="flex items-center gap-1 rounded-md border border-shell-800 transition hover:border-shell-600 hover:bg-shell-800"
+                  >
                     <Link
                       href={`/projects/${project.id}/scenes/${scene.id}`}
-                      className="flex items-center justify-between rounded-md border border-shell-800 px-2.5 py-2 text-sm transition hover:border-shell-600 hover:bg-shell-800"
+                      className="flex flex-1 items-center justify-between gap-2 px-2.5 py-2 text-sm"
                     >
                       <span className="truncate text-shell-100">{scene.name}</span>
                       <span className="text-[11px] text-shell-400">
                         {scene.doc.nodes.length} item{scene.doc.nodes.length === 1 ? '' : 's'}
                       </span>
                     </Link>
+                    <button
+                      onClick={() => deleteScene(scene)}
+                      title="Delete stand"
+                      className="px-2 text-[11px] text-shell-500 hover:text-red-300"
+                    >
+                      ✕
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -319,16 +375,19 @@ function AssetCard({
   row,
   libraryEntries,
   onChanged,
+  onDelete,
 }: {
   row: AssetRow;
   libraryEntries: MaterialLibraryEntry[];
   onChanged: () => void;
+  onDelete: () => void;
 }) {
-  const { asset, currentVersion } = row;
+  const { asset, currentVersion, meshUrl, previewUrl } = row;
   const [instruction, setInstruction] = useState('');
   const [rebuild, setRebuild] = useState(false);
   const [open, setOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   async function refine() {
     if (!instruction.trim()) return;
@@ -375,24 +434,47 @@ function AssetCard({
     await onChanged();
   }
 
+  async function remove() {
+    if (!confirm(`Delete "${asset.name || 'this piece'}"? Every version and its notes go with it.`)) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      const response = await fetch(`/api/assets/${asset.id}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error();
+      onDelete();
+    } catch {
+      setDeleting(false);
+    }
+  }
+
   return (
     <li className="rounded-lg border border-shell-800 p-3">
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="truncate font-medium text-shell-100">
-              {asset.name || 'Identifying…'}
-            </span>
-            <Badge tone={STATUS_TONE[asset.status]}>{asset.status.replace(/_/g, ' ')}</Badge>
-            {currentVersion?.acceptedAt && <Badge tone="good">accepted</Badge>}
+        <div className="flex min-w-0 items-start gap-3">
+          <AssetThumbnail
+            key={currentVersion?.id ?? asset.id}
+            assetId={asset.id}
+            versionId={currentVersion?.id ?? ''}
+            meshUrl={currentVersion ? meshUrl : null}
+            previewUrl={currentVersion ? previewUrl : null}
+          />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="truncate font-medium text-shell-100">
+                {asset.name || 'Identifying…'}
+              </span>
+              <Badge tone={STATUS_TONE[asset.status]}>{asset.status.replace(/_/g, ' ')}</Badge>
+              {currentVersion?.acceptedAt && <Badge tone="good">accepted</Badge>}
+            </div>
+            {currentVersion && (
+              <p className="mt-1 text-xs text-shell-400">
+                v{currentVersion.versionNumber} · {currentVersion.spec.dimensions.widthMm} ×{' '}
+                {currentVersion.spec.dimensions.depthMm} × {currentVersion.spec.dimensions.heightMm} mm ·{' '}
+                {currentVersion.spec.dimensionConfidence} dimensions · {currentVersion.provider}
+              </p>
+            )}
           </div>
-          {currentVersion && (
-            <p className="mt-1 text-xs text-shell-400">
-              v{currentVersion.versionNumber} · {currentVersion.spec.dimensions.widthMm} ×{' '}
-              {currentVersion.spec.dimensions.depthMm} × {currentVersion.spec.dimensions.heightMm} mm ·{' '}
-              {currentVersion.spec.dimensionConfidence} dimensions · {currentVersion.provider}
-            </p>
-          )}
         </div>
         <div className="flex shrink-0 gap-1.5">
           {currentVersion?.meshPath && !currentVersion.acceptedAt && (
@@ -402,6 +484,9 @@ function AssetCard({
           )}
           <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)}>
             Refine
+          </Button>
+          <Button size="sm" variant="danger" onClick={remove} disabled={deleting}>
+            {deleting ? 'Deleting…' : 'Delete'}
           </Button>
         </div>
       </div>

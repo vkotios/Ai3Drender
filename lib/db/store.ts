@@ -191,6 +191,20 @@ export interface Store {
   putBlob(key: string, bytes: Uint8Array, contentType: string): Promise<string>;
   getBlob(key: string): Promise<Blob | null>;
   deleteBlob(key: string): Promise<void>;
+  /**
+   * Remove every blob whose key starts with this prefix - e.g. a whole
+   * project's `<project_id>` subtree, or one scene's
+   * `<project_id>/renders/<scene_id>` folder. A prefix with nothing under it
+   * is not an error. Refuses an empty prefix, which would otherwise sweep
+   * every blob in storage.
+   */
+  deleteBlobPrefix(prefix: string): Promise<void>;
+  /**
+   * List every blob key in storage, optionally under a prefix. Only used by
+   * the storage reconciliation script (`scripts/reconcile-storage.ts`) to
+   * find blobs with no owning row - not on any request path.
+   */
+  listBlobKeys(prefix?: string): Promise<string[]>;
   /** A URL the browser can fetch. May be signed and time-limited. */
   blobUrl(key: string): Promise<string>;
 

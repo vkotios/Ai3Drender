@@ -28,7 +28,7 @@ export const isUnit = (value: unknown): value is number =>
  * Library swatches are account-level, not project-level, so they cannot use
  * the project-prefixed key layout the rest of storage uses. Mirrors that
  * convention with the owner id standing in for a project id - see the storage
- * RLS policy in 0004_material_library.sql.
+ * RLS policy in 0005_material_library.sql.
  */
 export const librarySwatchKey = (ownerId: string, ext: string) =>
   `library/${ownerId}/${randomUUID()}.${ext}`;
