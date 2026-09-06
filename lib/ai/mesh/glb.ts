@@ -36,7 +36,8 @@ const FACES: { normal: [number, number, number]; corners: [number, number, numbe
   { normal: [0, -1, 0], corners: [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]] },
 ];
 
-function hexToRgb(hex: string | undefined): [number, number, number] {
+/** sRGB hex -> linear RGB, glTF's base colour space. Shared with `rebake.ts`. */
+export function hexToRgb(hex: string | undefined): [number, number, number] {
   // Vendor and model data reaches here unvalidated; a bad colour must not
   // abort the whole export.
   const m = hex ? /^#?([0-9a-f]{6})$/i.exec(hex.trim()) : null;

@@ -398,6 +398,33 @@ export function offlineMaterialCorrection(
   };
 }
 
+/**
+ * Deterministic stand-in for Gemini-driven free-text part matching, used when
+ * GEMINI_API_KEY is unset (see `resolvePartReference` in lib/ai/gemini.ts,
+ * issue #57). It cannot reason about the request the way a model can, so
+ * instead it scores each candidate part by how many words it shares with the
+ * query - checking both the part's name and its role, since "the legs" only
+ * literally shares a word with a part named "Legs", but "the frame" should
+ * still resolve a part whose name is unrelated but whose role is "frame".
+ * Returns the single highest-scoring part, or null when nothing shares even
+ * one word, rather than guessing at a part the query gave no basis for.
+ */
+export function offlineResolvePartReference(
+  query: string,
+  parts: { name: string; role: string }[],
+): string | null {
+  const words = (s: string) => new Set(s.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+  const queryWords = words(query);
+  if (queryWords.size === 0) return null;
+
+  let best: { name: string; score: number } | null = null;
+  for (const part of parts) {
+    const score = [...words(`${part.name} ${part.role}`)].filter((w) => queryWords.has(w)).length;
+    if (score > 0 && (!best || score > best.score)) best = { name: part.name, score };
+  }
+  return best?.name ?? null;
+}
+
 export function offlineSceneDirection(pieces: string[]): SceneDirection {
   return {
     concept: 'Neutral gallery booth',

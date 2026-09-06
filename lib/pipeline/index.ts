@@ -1,13 +1,18 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   analyzeFurniture,
   conceptRender,
+  correctMaterial,
   directScene,
   evaluateReconstruction,
   refineSpec,
+  resolvePartReference,
   synthesizeViews,
   type ImageInput,
 } from '@/lib/ai/gemini';
 import { getMeshProvider } from '@/lib/ai/mesh';
+import { rebakePartMaterial } from '@/lib/ai/mesh/rebake';
 import { createPreviewMesh } from '@/lib/ai/mesh/simplify';
 import { offlineQaResult } from '@/lib/ai/offline';
 import { renderMeshViews } from '@/lib/ai/qa/render';
@@ -23,8 +28,12 @@ import type {
   Annotation,
   AssetVersion,
   FurnitureAsset,
+  FurnitureComponent,
+  FurnitureSpec,
   Job,
+  MaterialSpec,
   QaResult,
+  RebakePartRequest,
   RefinementRequest,
   SourceImage,
   SynthesizedView,
@@ -39,6 +48,7 @@ import type {
  *
  *   analyze -> synthesize_views -> reconstruct
  *   refine  -> (optionally) synthesize_views -> reconstruct
+ *   rebake_part (self-contained: no follow-on job)
  */
 
 export type { StageContext } from './context';
@@ -600,6 +610,207 @@ async function runConceptRender(ctx: StageContext): Promise<Record<string, unkno
 }
 
 /* -------------------------------------------------------------------------- */
+/* Stage 7: re-bake one part's material into a new version's mesh            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Resolve `target` to exactly one of `spec`'s named components.
+ *
+ * Tries an exact match first, the same way an anchored note's mesh part name
+ * is resolved back to a component (`resolveComponent` in lib/scene/anchor.ts)
+ * - a rebake request routinely names a part exactly ("Legs", or "leg" by
+ * role). Only when that fails is a model call spent disambiguating free text
+ * against the component list - see `resolvePartReference`.
+ */
+async function resolveTargetComponent(
+  target: string,
+  spec: FurnitureSpec,
+): Promise<FurnitureComponent | null> {
+  const exactName = resolveComponent(target, spec).componentName;
+  if (exactName) return spec.components.find((c) => c.name === exactName) ?? null;
+
+  const matched = await resolvePartReference(
+    target,
+    spec.components.map((c) => ({ name: c.name, role: c.role })),
+  );
+  return matched ? (spec.components.find((c) => c.name === matched) ?? null) : null;
+}
+
+/** The two mutually exclusive shapes a rebake request's material change can take. */
+type RebakeMaterialChangeInput = { libraryEntryId: string } | { instruction: string };
+
+async function runRebakePart(ctx: StageContext): Promise<Record<string, unknown>> {
+  const { store, job } = ctx;
+  const parentId = job.input.versionId as string;
+  const target = job.input.target as string;
+  const materialChange = job.input.materialChange as RebakeMaterialChangeInput;
+
+  const parent = await store.getAssetVersion(parentId);
+  if (!parent) throw new Error(`rebake_part: version ${parentId} not found`);
+  if (!parent.meshPath) throw new Error('rebake_part: this version has no mesh to rebake yet');
+  const asset = await store.getAsset(parent.assetId);
+  if (!asset) throw new Error('rebake_part: asset not found');
+
+  await ctx.report(0.1, `Finding "${target}" on the piece`);
+  const component = await resolveTargetComponent(target, parent.spec);
+  if (!component) {
+    const known = parent.spec.components.map((c) => c.name).join(', ') || '(none)';
+    throw new Error(`rebake_part: could not match "${target}" to a part on this piece. Known parts: ${known}.`);
+  }
+
+  const baseMaterial = parent.spec.materials.find((m) => m.id === component.materialId);
+  if (!baseMaterial) {
+    throw new Error(`rebake_part: component "${component.name}" has no material bound on this version`);
+  }
+
+  await ctx.report(0.3, 'Determining the new material');
+  let materialSource: RebakePartRequest['materialSource'];
+  let libraryEntryId: string | null = null;
+  let instruction: string | null = null;
+  let newMaterial: MaterialSpec;
+
+  if ('libraryEntryId' in materialChange) {
+    const candidate = await store.getMaterialLibraryEntry(materialChange.libraryEntryId);
+    if (!candidate) throw new Error(`rebake_part: library material ${materialChange.libraryEntryId} not found`);
+    materialSource = 'library';
+    libraryEntryId = candidate.id;
+    newMaterial = {
+      id: randomUUID(),
+      name: candidate.name,
+      kind: candidate.kind,
+      baseColorHex: candidate.baseColorHex,
+      roughness: candidate.roughness,
+      metalness: candidate.metalness,
+      sheen: candidate.sheen,
+      clearcoat: candidate.clearcoat,
+      finish: candidate.finish,
+      notes: `Rebaked onto "${component.name}" from the material library.`,
+      libraryEntryId: candidate.id,
+      invented: false,
+    };
+  } else if (materialChange.instruction?.trim()) {
+    instruction = materialChange.instruction.trim();
+    materialSource = 'instruction';
+    const correction = await correctMaterial(baseMaterial, instruction);
+    newMaterial = {
+      ...baseMaterial,
+      id: randomUUID(),
+      baseColorHex: correction.baseColorHex,
+      roughness: correction.roughness,
+      metalness: correction.metalness,
+      sheen: correction.sheen,
+      clearcoat: correction.clearcoat,
+      finish: correction.finish,
+      notes: correction.notes,
+      libraryEntryId: null,
+      invented: true,
+    };
+  } else {
+    throw new Error('rebake_part: either a libraryEntryId or an instruction is required');
+  }
+
+  // Fork rather than mutate the shared entry in place: any other component
+  // still bound to `component.materialId` must keep rendering exactly as
+  // before - only the targeted component moves onto the new, part-specific
+  // entry, which is what keeps this a *part* rebake rather than a rebind that
+  // (like the material spot-fix, issue #48) changes every part sharing it.
+  const spec: FurnitureSpec = {
+    ...parent.spec,
+    materials: [...parent.spec.materials, newMaterial],
+    components: parent.spec.components.map((c) =>
+      c.name === component.name ? { ...c, materialId: newMaterial.id } : c,
+    ),
+  };
+
+  await ctx.report(0.5, 'Creating new version');
+  const version = await store.createAssetVersion({
+    assetId: asset.id,
+    versionNumber: await nextVersionNumber(store, asset.id),
+    label: `Rebaked ${component.name}`,
+    parentVersionId: parent.id,
+    spec,
+    // Nothing about the photographed views changes - only one part's material.
+    views: parent.views,
+    meshPath: null,
+    previewMeshPath: null,
+    meshExtentMm: parent.meshExtentMm,
+    // The part's colour just changed; the parent's captured thumbnail no
+    // longer depicts this version faithfully, so a fresh one is captured
+    // rather than carried over stale - same rule `refine`'s rebuildMesh
+    // branch follows for the same reason.
+    previewPath: null,
+    provider: parent.provider,
+    providerJobId: null,
+    refinement: null,
+    rebakedPart: null, // filled in below, once the mesh has actually rebaked
+    qaResult: parent.qaResult,
+    acceptedAt: null,
+  });
+
+  await ctx.report(0.65, `Repainting "${component.name}" in the mesh`);
+  const meshBlob = await store.getBlob(parent.meshPath);
+  if (!meshBlob) throw new Error(`rebake_part: stored mesh ${parent.meshPath} is missing`);
+
+  const rebaked = await rebakePartMaterial(meshBlob.bytes, [component.name], {
+    name: newMaterial.name,
+    baseColorHex: newMaterial.baseColorHex,
+    roughness: newMaterial.roughness,
+    metalness: newMaterial.metalness,
+  });
+  if (rebaked.matchedNames.length === 0) {
+    throw new Error(
+      `rebake_part: "${component.name}" resolved on the specification, but no mesh part with a ` +
+        'matching name was found on the stored mesh - it may be a vendor mesh whose node names ' +
+        "don't follow this app's own naming convention.",
+    );
+  }
+
+  const meshPath = key.mesh(asset.projectId, version.id);
+  await store.putBlob(meshPath, rebaked.glb, 'model/gltf-binary');
+
+  // Same best-effort preview simplification `reconstruct` performs - the
+  // rebaked mesh needs its own decimated copy; reusing the parent's would
+  // show the part in its old material.
+  await ctx.report(0.85, 'Simplifying preview mesh');
+  let previewMeshPath: string | null = null;
+  try {
+    const preview = await createPreviewMesh(rebaked.glb, env.viewportMeshSimplifyRatio);
+    if (preview) {
+      previewMeshPath = key.previewMesh(asset.projectId, version.id);
+      await store.putBlob(previewMeshPath, preview.glb, 'model/gltf-binary');
+    }
+  } catch (cause) {
+    console.error(`[rebake_part] preview mesh simplification failed for version ${version.id}`, cause);
+  }
+
+  const rebakedPart: RebakePartRequest = {
+    target,
+    componentNames: [component.name],
+    meshPartNames: rebaked.matchedNames,
+    materialSource,
+    libraryEntryId,
+    instruction,
+    materialId: newMaterial.id,
+  };
+  await store.updateAssetVersion(version.id, { meshPath, previewMeshPath, rebakedPart });
+
+  // Best-effort, same as `reconstruct`: the part's appearance changed, so the
+  // fidelity verdict is worth re-checking rather than silently carrying the
+  // parent's over.
+  const qaResult = await runPerceptualQa(ctx, store, asset, version, rebaked.glb);
+
+  await store.updateAsset(asset.id, { status: 'ready', currentVersionId: version.id });
+
+  return {
+    versionId: version.id,
+    component: component.name,
+    meshPartNames: rebaked.matchedNames,
+    materialId: newMaterial.id,
+    qaScore: qaResult?.score ?? null,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* Dispatch                                                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -611,6 +822,7 @@ const STAGES: Record<Job['kind'], (ctx: StageContext) => Promise<Record<string, 
   direct_scene: runDirectScene,
   concept_render: runConceptRender,
   render: runRender,
+  rebake_part: runRebakePart,
 };
 
 /**

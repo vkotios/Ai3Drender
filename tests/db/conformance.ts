@@ -67,6 +67,74 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
     expect(updated?.status).toBe('ready');
   });
 
+  it('round-trips rebakedPart on create and on update (issue #57)', async () => {
+    const store = await getStore();
+    const project = await store.createProject({ ownerId: 'owner-rebake', name: 'Booth 57' });
+    const asset = await store.createAsset({
+      projectId: project.id,
+      name: 'Chair',
+      status: 'draft',
+      currentVersionId: null,
+      sourceImageIds: [],
+    });
+
+    // Absent on an ordinary version, same as every version recorded before
+    // this field existed.
+    const plain = await store.createAssetVersion({
+      assetId: asset.id,
+      versionNumber: 1,
+      label: 'v1',
+      parentVersionId: null,
+      spec: makeFurnitureSpec(),
+      views: [],
+      meshPath: null,
+      previewMeshPath: null,
+      previewPath: null,
+      meshExtentMm: null,
+      provider: 'stub',
+      providerJobId: null,
+      refinement: null,
+      qaResult: null,
+      acceptedAt: null,
+    });
+    expect(plain.rebakedPart ?? null).toBeNull();
+
+    const rebakedPart = {
+      target: 'Legs',
+      componentNames: ['Legs'],
+      meshPartNames: ['Legs 1', 'Legs 2'],
+      materialSource: 'instruction' as const,
+      libraryEntryId: null,
+      instruction: 'darker walnut',
+      materialId: 'new-material',
+    };
+    const created = await store.createAssetVersion({
+      assetId: asset.id,
+      versionNumber: 2,
+      label: 'Rebaked Legs',
+      parentVersionId: plain.id,
+      spec: makeFurnitureSpec(),
+      views: [],
+      meshPath: null,
+      previewMeshPath: null,
+      previewPath: null,
+      meshExtentMm: null,
+      provider: 'stub',
+      providerJobId: null,
+      refinement: null,
+      rebakedPart,
+      qaResult: null,
+      acceptedAt: null,
+    });
+    expect(created.rebakedPart).toEqual(rebakedPart);
+
+    const reread = await store.getAssetVersion(created.id);
+    expect(reread?.rebakedPart).toEqual(rebakedPart);
+
+    const updated = await store.updateAssetVersion(created.id, { rebakedPart: null });
+    expect(updated.rebakedPart ?? null).toBeNull();
+  });
+
   it('rejects mutating an accepted asset version (immutability rule)', async () => {
     const store = await getStore();
     const project = await store.createProject({ ownerId: 'owner-c', name: 'Booth 3' });

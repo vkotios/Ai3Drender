@@ -390,6 +390,14 @@ function AssetCard({
   const [sending, setSending] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  const [rebakeOpen, setRebakeOpen] = useState(false);
+  const [rebakeTarget, setRebakeTarget] = useState('');
+  const [rebakeCustomTarget, setRebakeCustomTarget] = useState('');
+  const [rebakeLibraryEntryId, setRebakeLibraryEntryId] = useState('');
+  const [rebakeInstruction, setRebakeInstruction] = useState('');
+  const [rebakeSending, setRebakeSending] = useState(false);
+  const [rebakeError, setRebakeError] = useState<string | null>(null);
+
   async function refine() {
     if (!instruction.trim()) return;
     setSending(true);
@@ -424,6 +432,51 @@ function AssetCard({
       },
     );
     await onChanged();
+  }
+
+  /**
+   * Re-bake one part's material permanently into a new version's mesh
+   * (issue #57) - distinct from `bindMaterial` above, which only patches the
+   * spec and leaves every existing version's mesh untouched.
+   */
+  async function rebakePart() {
+    if (!currentVersion) return;
+    const target = rebakeTarget === '__other__' ? rebakeCustomTarget.trim() : rebakeTarget;
+    if (!target) {
+      setRebakeError('Choose or describe a part first.');
+      return;
+    }
+    if (!rebakeLibraryEntryId && !rebakeInstruction.trim()) {
+      setRebakeError('Bind to a library material, or describe the new material.');
+      return;
+    }
+
+    setRebakeSending(true);
+    setRebakeError(null);
+    try {
+      const response = await fetch(
+        `/api/assets/${asset.id}/versions/${currentVersion.id}/rebake-part`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(
+            rebakeLibraryEntryId
+              ? { target, libraryEntryId: rebakeLibraryEntryId }
+              : { target, instruction: rebakeInstruction.trim() },
+          ),
+        },
+      );
+      if (!response.ok) throw new Error((await response.json()).error ?? 'Could not start');
+      setRebakeCustomTarget('');
+      setRebakeLibraryEntryId('');
+      setRebakeInstruction('');
+      setRebakeOpen(false);
+      await onChanged();
+    } catch (cause) {
+      setRebakeError(cause instanceof Error ? cause.message : 'Could not start');
+    } finally {
+      setRebakeSending(false);
+    }
   }
 
   async function promoteMaterial(materialId: string) {
@@ -496,6 +549,11 @@ function AssetCard({
           <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)}>
             Refine
           </Button>
+          {currentVersion?.meshPath && (
+            <Button size="sm" variant="ghost" onClick={() => setRebakeOpen((v) => !v)}>
+              Rebake part
+            </Button>
+          )}
           <Button size="sm" variant="danger" onClick={remove} disabled={deleting}>
             {deleting ? 'Deleting…' : 'Delete'}
           </Button>
@@ -574,6 +632,66 @@ function AssetCard({
           </label>
           <Button size="sm" variant="primary" onClick={refine} disabled={sending || !instruction.trim()}>
             {sending ? 'Queuing…' : 'Create new version'}
+          </Button>
+        </div>
+      )}
+
+      {rebakeOpen && currentVersion && (
+        <div className="mt-3 space-y-2 border-t border-shell-800 pt-3">
+          <p className="text-xs text-shell-400">
+            Permanently re-bakes one part&apos;s material into a new version&apos;s mesh, leaving every
+            other part untouched - unlike Refine, this never re-runs reconstruction.
+          </p>
+          <Field label="Part">
+            <select
+              value={rebakeTarget}
+              onChange={(e) => setRebakeTarget(e.target.value)}
+              className="w-full rounded border border-shell-700 bg-shell-850 px-1.5 py-1 text-xs text-shell-200 focus:border-shell-400 focus:outline-none"
+            >
+              <option value="" disabled>
+                Choose a part…
+              </option>
+              {currentVersion.spec.components.map((c) => (
+                <option key={c.name} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+              <option value="__other__">Other (describe it)…</option>
+            </select>
+          </Field>
+          {rebakeTarget === '__other__' && (
+            <TextInput
+              value={rebakeCustomTarget}
+              onChange={(e) => setRebakeCustomTarget(e.target.value)}
+              placeholder="e.g. the cushion on top"
+            />
+          )}
+          {libraryEntries.length > 0 && (
+            <Field label="Bind to a library material" hint="Leave on “None” to describe a new one instead.">
+              <select
+                value={rebakeLibraryEntryId}
+                onChange={(e) => setRebakeLibraryEntryId(e.target.value)}
+                className="w-full rounded border border-shell-700 bg-shell-850 px-1.5 py-1 text-xs text-shell-200 focus:border-shell-400 focus:outline-none"
+              >
+                <option value="">None</option>
+                {libraryEntries.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+          {!rebakeLibraryEntryId && (
+            <TextInput
+              value={rebakeInstruction}
+              onChange={(e) => setRebakeInstruction(e.target.value)}
+              placeholder="Describe the new material, e.g. brushed brass"
+            />
+          )}
+          {rebakeError && <p className="text-xs text-red-400">{rebakeError}</p>}
+          <Button size="sm" variant="primary" onClick={rebakePart} disabled={rebakeSending}>
+            {rebakeSending ? 'Queuing…' : 'Rebake part'}
           </Button>
         </div>
       )}
