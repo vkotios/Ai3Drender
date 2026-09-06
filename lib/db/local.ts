@@ -55,9 +55,7 @@ const EMPTY: Db = {
   sceneRenders: [],
 };
 
-const ROOT = path.join(process.cwd(), 'storage-local');
-const DB_FILE = path.join(ROOT, 'db.json');
-const BLOB_DIR = path.join(ROOT, 'blobs');
+const DEFAULT_ROOT = path.join(process.cwd(), 'storage-local');
 
 const now = () => new Date().toISOString();
 
@@ -99,11 +97,26 @@ const LOCK_STALE_MS = 10_000;
 export class LocalStore implements Store {
   readonly kind = 'local' as const;
 
+  private readonly root: string;
+  private readonly dbFile: string;
+  private readonly blobDir: string;
+
   private queue: Promise<unknown> = Promise.resolve();
+
+  /**
+   * @param root Where the database file and blob directory live. Defaults to
+   * `<cwd>/storage-local`. Overridable so tests (and any other embedder) can
+   * point at an isolated directory instead of the real dev store.
+   */
+  constructor(root: string = DEFAULT_ROOT) {
+    this.root = root;
+    this.dbFile = path.join(root, 'db.json');
+    this.blobDir = path.join(root, 'blobs');
+  }
 
   private async read(): Promise<Db> {
     try {
-      const raw = await readFile(DB_FILE, 'utf8');
+      const raw = await readFile(this.dbFile, 'utf8');
       return { ...EMPTY, ...(JSON.parse(raw) as Partial<Db>) };
     } catch {
       return structuredClone(EMPTY);
@@ -119,8 +132,8 @@ export class LocalStore implements Store {
    * takes it over.
    */
   private async withFileLock<T>(fn: () => Promise<T>): Promise<T> {
-    await mkdir(ROOT, { recursive: true });
-    const release = await lockfile.lock(DB_FILE, {
+    await mkdir(this.root, { recursive: true });
+    const release = await lockfile.lock(this.dbFile, {
       realpath: false,
       stale: LOCK_STALE_MS,
       // Roughly five seconds of patience, which comfortably covers another
@@ -143,9 +156,9 @@ export class LocalStore implements Store {
         const db = await this.read();
         const result = await fn(db);
         // The pid keeps two processes from colliding on the same temp path.
-        const tmp = `${DB_FILE}.${process.pid}.tmp`;
+        const tmp = `${this.dbFile}.${process.pid}.tmp`;
         await writeFile(tmp, JSON.stringify(db, null, 2), 'utf8');
-        await rename(tmp, DB_FILE);
+        await rename(tmp, this.dbFile);
         return result;
       }),
     );
@@ -565,8 +578,8 @@ export class LocalStore implements Store {
   private blobPath(key: string): string {
     // Keys are app-generated (`<project>/<kind>/<uuid>.<ext>`), but refuse to
     // escape the blob root regardless.
-    const resolved = path.resolve(BLOB_DIR, key);
-    if (!resolved.startsWith(BLOB_DIR + path.sep)) {
+    const resolved = path.resolve(this.blobDir, key);
+    if (!resolved.startsWith(this.blobDir + path.sep)) {
       throw new Error(`illegal blob key: ${key}`);
     }
     return resolved;
