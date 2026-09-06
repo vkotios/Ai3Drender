@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { Badge, Field, Panel, Slider, TextInput } from '@/components/ui';
+import { orphanedOverrideKeys } from '@/lib/scene/materialOverrides';
 import { BOOTH_PRESETS, PROP_DEFINITIONS, getPreset } from '@/lib/scene/presets';
 import { useStudio } from '@/lib/studio/store';
 import type { AssetVersion, SceneNode } from '@/lib/types';
@@ -154,17 +155,39 @@ function MaterialInspector({ node }: { node: SceneNode }) {
   if (!loaded) return null;
 
   const spec = loaded.version.spec;
+  const orphaned = orphanedOverrideKeys(node, spec.materials);
 
   return (
     <Panel title="Materials">
       <div className="space-y-4">
+        {orphaned.length > 0 && (
+          <div className="rounded-md border border-amber-700/60 bg-amber-950/30 p-2.5 text-[11px] text-amber-300">
+            <p className="leading-relaxed">
+              {orphaned.length} material override{orphaned.length === 1 ? '' : 's'} on this piece{' '}
+              {orphaned.length === 1 ? "doesn't" : "don't"} match anything in the current
+              specification - the material {orphaned.length === 1 ? 'it targeted was' : 'they targeted were'}{' '}
+              renamed or removed by a refinement. Kept, but not applied.
+            </p>
+            <button
+              className="mt-1.5 font-medium text-amber-200 hover:text-amber-100"
+              onClick={() => {
+                const next = { ...node.materialOverrides };
+                for (const key of orphaned) delete next[key];
+                patchNode(node.id, { materialOverrides: next });
+              }}
+            >
+              Discard {orphaned.length === 1 ? 'it' : 'them'}
+            </button>
+          </div>
+        )}
+
         {spec.materials.map((material) => {
-          const override = node.materialOverrides[material.name] ?? {};
+          const override = node.materialOverrides[material.id] ?? {};
           const set = (patch: Partial<typeof override>) =>
             patchNode(node.id, {
               materialOverrides: {
                 ...node.materialOverrides,
-                [material.name]: { ...override, ...patch },
+                [material.id]: { ...override, ...patch },
               },
             });
 
@@ -209,7 +232,7 @@ function MaterialInspector({ node }: { node: SceneNode }) {
                   className="mt-2 text-[11px] text-shell-400 hover:text-shell-100"
                   onClick={() => {
                     const next = { ...node.materialOverrides };
-                    delete next[material.name];
+                    delete next[material.id];
                     patchNode(node.id, { materialOverrides: next });
                   }}
                 >

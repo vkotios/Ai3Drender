@@ -1,5 +1,6 @@
 import { apiError, json, withScene } from '@/lib/api';
-import type { SceneDoc } from '@/lib/types';
+import { migrateSceneOnLoad } from '@/lib/scene/materialOverrides';
+import type { MaterialSpec, SceneDoc, Uuid } from '@/lib/types';
 
 type Params = { params: Promise<{ sceneId: string }> };
 
@@ -20,11 +21,19 @@ export async function GET(_request: Request, { params }: Params) {
         meshUrl: version.meshPath ? await store.blobUrl(version.meshPath) : null,
       });
     }
+
+    // Rekey any material overrides still written under the pre-fix "material
+    // name" scheme (issue #7) before handing the doc back.
+    const specMaterialsByVersionId = new Map<Uuid, readonly MaterialSpec[]>(
+      versions.map((v) => [v.version.id, v.version.spec.materials]),
+    );
+    const migrated = await migrateSceneOnLoad(store, scene, specMaterialsByVersionId);
+
     // The studio needs every note on every staged piece, plus any renders
     // already produced for this stand.
     const assetIds = [...new Set(versions.map((v) => v.version.assetId))];
     return json({
-      scene,
+      scene: migrated,
       versions,
       annotations: await store.listAnnotations(assetIds),
       renders: await store.listSceneRenders(scene.id),
