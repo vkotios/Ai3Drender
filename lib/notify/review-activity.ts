@@ -13,7 +13,9 @@ export type ReviewActivityEvent =
 const STATUS_LABEL: Record<ClientApproval, string> = {
   pending: 'marked pending',
   approved: 'approved',
+  approved_with_changes: 'approved, with changes',
   changes_requested: 'requested changes',
+  not_relevant: 'marked not relevant',
 };
 
 function describe(event: ReviewActivityEvent): { headline: string; detail: string | null } {
