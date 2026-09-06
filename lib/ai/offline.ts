@@ -273,6 +273,113 @@ export function offlineFurnitureSpec(
   };
 }
 
+function clamp01(n: number): number {
+  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
+}
+
+/**
+ * Blend a hex colour toward black (delta < 0) or white (delta > 0) by
+ * `abs(delta)`. An invalid hex falls back to mid-grey first, same guard
+ * `normalizeSpec` in lib/ai/gemini.ts uses.
+ */
+function mixHex(hex: string, delta: number): string {
+  const clean = /^#[0-9a-f]{6}$/i.test(hex) ? hex : '#9a9a9a';
+  const n = clean.replace('#', '');
+  const target = delta < 0 ? 0 : 255;
+  const t = Math.min(1, Math.abs(delta));
+  const mixed = [0, 2, 4].map((i) => {
+    const channel = parseInt(n.slice(i, i + 2), 16);
+    return Math.round(channel + (target - channel) * t);
+  });
+  return `#${mixed.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
+}
+
+export type MaterialCorrectionFields = Pick<
+  MaterialSpec,
+  'baseColorHex' | 'roughness' | 'metalness' | 'sheen' | 'clearcoat' | 'finish' | 'notes'
+>;
+
+/**
+ * Deterministic stand-in for a Gemini-driven material spot-fix, used when
+ * GEMINI_API_KEY is unset. It cannot regenerate texture without a model, so
+ * instead it reads a handful of plain-language cues out of the instruction
+ * (darker/lighter, matte/glossy, rough/smooth, metallic) and nudges the PBR
+ * values accordingly - never a no-op, so the endpoint stays fully
+ * exercisable with zero API keys.
+ *
+ * The size of each nudge (`magnitude`) is seeded off the material id plus the
+ * instruction text via the same FNV hash `offlineFurnitureSpec` uses, so a
+ * given (material, instruction) pair always produces the same result -
+ * mirroring that function's determinism - while different instructions still
+ * land differently rather than every correction applying the same fixed step.
+ */
+export function offlineMaterialCorrection(
+  material: Pick<MaterialSpec, 'id' | 'baseColorHex' | 'roughness' | 'metalness' | 'sheen' | 'clearcoat' | 'finish'>,
+  instruction: string,
+): MaterialCorrectionFields {
+  const words = ` ${instruction.toLowerCase()} `;
+  const has = (...keywords: string[]) => keywords.some((k) => words.includes(k));
+  const seed = hash(`${material.id}|${instruction}`);
+  const magnitude = 0.12 + (seed % 17) / 100; // 0.12..0.28
+
+  let baseColorHex = material.baseColorHex;
+  let roughness = material.roughness;
+  let metalness = material.metalness;
+  let clearcoat = material.clearcoat;
+  let finish = material.finish;
+  let matched = false;
+
+  if (has('dark', 'darker', 'deep', 'espresso', 'ebony', 'charcoal')) {
+    baseColorHex = mixHex(baseColorHex, -magnitude);
+    matched = true;
+  } else if (has('light', 'lighter', 'pale', 'bleached', 'blonde')) {
+    baseColorHex = mixHex(baseColorHex, magnitude);
+    matched = true;
+  }
+
+  if (has('matte', 'matt', 'flat finish')) {
+    roughness = clamp01(roughness + magnitude);
+    clearcoat = clamp01(clearcoat - magnitude);
+    finish = 'matte';
+    matched = true;
+  } else if (has('glossy', 'gloss', 'shiny', 'polished', 'lacquered')) {
+    roughness = clamp01(roughness - magnitude);
+    clearcoat = clamp01(clearcoat + magnitude);
+    finish = 'polished';
+    matched = true;
+  } else if (has('rough', 'coarse', 'textured')) {
+    roughness = clamp01(roughness + magnitude);
+    matched = true;
+  } else if (has('smooth', 'sleek', 'silky')) {
+    roughness = clamp01(roughness - magnitude);
+    matched = true;
+  }
+
+  if (has('metallic', 'chrome', 'brushed metal')) {
+    metalness = clamp01(metalness + magnitude);
+    matched = true;
+  }
+
+  if (!matched) {
+    // No recognised cue in the instruction: a live Gemini call would still
+    // return *some* change, so nudge colour and roughness by the same seeded
+    // magnitude rather than silently leaving the material untouched.
+    const sign = seed % 2 === 0 ? -1 : 1;
+    baseColorHex = mixHex(baseColorHex, sign * magnitude);
+    roughness = clamp01(roughness + sign * magnitude * 0.5);
+  }
+
+  return {
+    baseColorHex,
+    roughness,
+    metalness,
+    sheen: material.sheen,
+    clearcoat,
+    finish,
+    notes: `Spot-fixed offline per instruction: "${instruction.trim()}" (deterministic adjustment, no vision model configured).`,
+  };
+}
+
 export function offlineSceneDirection(pieces: string[]): SceneDirection {
   return {
     concept: 'Neutral gallery booth',

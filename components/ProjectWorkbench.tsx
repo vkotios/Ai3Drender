@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AssetThumbnail } from '@/components/AssetThumbnail';
+import { ConfidenceBadge } from '@/components/ConfidenceBadge';
 import { Badge, Button, Empty, Field, Panel, TextInput } from '@/components/ui';
 import type {
   AssetStatus,
@@ -466,6 +467,7 @@ function AssetCard({
               </span>
               <Badge tone={STATUS_TONE[asset.status]}>{asset.status.replace(/_/g, ' ')}</Badge>
               {currentVersion?.acceptedAt && <Badge tone="good">accepted</Badge>}
+              {currentVersion && <ConfidenceBadge spec={currentVersion.spec} />}
             </div>
             {currentVersion && (
               <p className="mt-1 text-xs text-shell-400">
@@ -481,6 +483,14 @@ function AssetCard({
             <Button size="sm" onClick={accept}>
               Accept
             </Button>
+          )}
+          {currentVersion?.acceptedAt && (
+            <a
+              href={`/api/assets/${asset.id}/versions/${currentVersion.id}/bom`}
+              className="inline-flex items-center justify-center gap-1.5 rounded-md border border-shell-700 bg-shell-800 px-2.5 py-1 text-xs font-medium text-shell-100 transition hover:border-shell-600 hover:bg-shell-700"
+            >
+              Export BOM
+            </a>
           )}
           <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)}>
             Refine
