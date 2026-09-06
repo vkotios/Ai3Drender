@@ -154,7 +154,7 @@ describe('offlineQaResult', () => {
   it("is marked 'offline' rather than pretending to be a real vision-model verdict", () => {
     const result = offlineQaResult();
     expect(result.source).toBe('offline');
-    expect(result.issues).toEqual([]);
+    expect(result.defects).toEqual([]);
     expect(result).toEqual(offlineQaResult()); // deterministic
   });
 });

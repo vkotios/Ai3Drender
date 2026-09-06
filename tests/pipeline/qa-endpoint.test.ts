@@ -83,6 +83,6 @@ describe('GET /api/assets/:assetId', () => {
     expect(body.asset.status).toBe('ready');
 
     const current = body.versions.find((v) => v.version.id === body.asset.currentVersionId);
-    expect(current?.version.qaResult).toEqual({ score: 100, issues: [], source: 'offline' });
+    expect(current?.version.qaResult).toEqual({ score: 100, defects: [], source: 'offline' });
   });
 });

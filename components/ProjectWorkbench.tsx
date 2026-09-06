@@ -12,6 +12,8 @@ import type {
   FurnitureAsset,
   Job,
   MaterialLibraryEntry,
+  MeshDefectCategory,
+  MeshDefectSeverity,
   Project,
   Scene,
   SourceImage,
@@ -33,6 +35,23 @@ const STATUS_TONE: Record<AssetStatus, 'neutral' | 'good' | 'bad' | 'busy'> = {
   reconstructing: 'busy',
   ready: 'good',
   failed: 'bad',
+};
+
+/** Human labels for the closed defect taxonomy (issue #56) - see `MeshDefectCategory` in lib/types.ts. */
+const DEFECT_CATEGORY_LABEL: Record<MeshDefectCategory, string> = {
+  fused_parts: 'Fused parts',
+  incomplete_part: 'Incomplete part',
+  missing_geometry: 'Missing geometry',
+  extra_geometry: 'Extra geometry',
+  form_defect: 'Form',
+  surface_defect: 'Surface',
+  texture_defect: 'Texture',
+};
+
+const DEFECT_SEVERITY_TONE: Record<MeshDefectSeverity, 'neutral' | 'good' | 'bad' | 'busy' | 'warn'> = {
+  minor: 'neutral',
+  moderate: 'warn',
+  severe: 'bad',
 };
 
 export function ProjectWorkbench({
@@ -614,6 +633,34 @@ function AssetCard({
         </ul>
       )}
 
+      {currentVersion?.qaResult && currentVersion.qaResult.defects.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {currentVersion.qaResult.defects.map((defect, i) => (
+            <li
+              key={i}
+              className="flex flex-wrap items-center gap-1.5 rounded border border-shell-800 px-1.5 py-1 text-[11px] text-shell-300"
+            >
+              <Badge tone={DEFECT_SEVERITY_TONE[defect.severity]}>{defect.severity}</Badge>
+              <span className="text-shell-400">{DEFECT_CATEGORY_LABEL[defect.category]}</span>
+              {defect.componentName && <Badge tone="neutral">{defect.componentName}</Badge>}
+              <span className="min-w-0 flex-1">{defect.description}</span>
+              {defect.componentName && currentVersion.meshPath && !currentVersion.acceptedAt && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setRebakeTarget(defect.componentName!);
+                    setRebakeOpen(true);
+                  }}
+                >
+                  Rebake
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
       {open && (
         <div className="mt-3 space-y-2 border-t border-shell-800 pt-3">
           <TextInput
@@ -702,6 +749,10 @@ function AssetCard({
 /**
  * Perceptual QA verdict, badge-sized: whether the reconstructed mesh actually
  * looks like the source photos (see lib/ai/gemini.ts's evaluateReconstruction).
+ * The score is the overall summary; the categorized `defects` (issue #56) -
+ * each naming a kind from the closed taxonomy, and the part it applies to
+ * when one could be identified - render as their own list below the asset
+ * row, not just in this tooltip.
  *
  * Always a soft signal - it never blocks Accept/Refine/Delete above, and an
  * offline result (no GEMINI_API_KEY configured) says exactly that rather than
@@ -718,9 +769,9 @@ function QaBadge({ qaResult }: { qaResult: NonNullable<AssetVersion['qaResult']>
 
   const tone = qaResult.score >= 80 ? 'good' : qaResult.score >= 50 ? 'warn' : 'bad';
   const title =
-    qaResult.issues.length > 0
-      ? `Fidelity vs. source photos: ${qaResult.score}/100 - ${qaResult.issues.join('; ')}`
-      : `Fidelity vs. source photos: ${qaResult.score}/100 - no issues flagged`;
+    qaResult.defects.length > 0
+      ? `Fidelity vs. source photos: ${qaResult.score}/100 - ${qaResult.defects.map((d) => d.description).join('; ')}`
+      : `Fidelity vs. source photos: ${qaResult.score}/100 - no defects flagged`;
 
   return (
     <span title={title}>

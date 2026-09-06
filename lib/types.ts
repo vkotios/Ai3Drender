@@ -263,6 +263,58 @@ export interface RebakePartRequest {
 }
 
 /**
+ * Closed taxonomy of mesh defect kinds a perceptual QA pass can report
+ * (issue #56, loosely following 3D-DefectBench's fused/incomplete/missing/
+ * extra-geometry/form/surface/texture split). Kept as a small closed enum
+ * rather than free text so Gemini reliably picks from it and the UI can
+ * render each kind consistently (icon, colour, grouping):
+ *
+ *   - `fused_parts`: two or more parts that should be distinct read as one
+ *     merged blob, e.g. an armrest melted into the backrest with no seam.
+ *   - `incomplete_part`: a part is present but truncated, thin where it
+ *     should be solid, or otherwise not fully formed.
+ *   - `missing_geometry`: a part or feature the photos show is absent
+ *     entirely.
+ *   - `extra_geometry`: geometry present that should not be, e.g. a
+ *     duplicated part, a floating artifact, or a doubled-up surface.
+ *   - `form_defect`: the overall silhouette or proportions read wrong even
+ *     though every part is present and separate (too tall, legs too thick).
+ *   - `surface_defect`: local surface noise, warping or holes on an
+ *     otherwise correct part - a construction-detail problem, not a
+ *     missing/extra-geometry one.
+ *   - `texture_defect`: the geometry is right but the colour, material or
+ *     finish reads wrong against the photos.
+ */
+export type MeshDefectCategory =
+  | 'fused_parts'
+  | 'incomplete_part'
+  | 'missing_geometry'
+  | 'extra_geometry'
+  | 'form_defect'
+  | 'surface_defect'
+  | 'texture_defect';
+
+export type MeshDefectSeverity = 'minor' | 'moderate' | 'severe';
+
+/** One concrete, categorized mismatch between a reconstructed mesh and the source photos. */
+export interface MeshDefect {
+  category: MeshDefectCategory;
+  /** One concrete sentence, e.g. "the left armrest is fused into the backrest with no seam." */
+  description: string;
+  severity: MeshDefectSeverity;
+  /**
+   * The spec component this defect applies to, when the model could
+   * attribute it to one specific part - resolved against `FurnitureSpec.components`
+   * the same way a rebake target is (`resolveComponent` in lib/scene/anchor.ts,
+   * issue #57), so a defect can drive a "rebake this part" suggestion in the
+   * UI without a separate lookup. Null when the defect is not localized to a
+   * single named part (e.g. a whole-piece proportion issue), or when it
+   * couldn't be matched to a known component.
+   */
+  componentName: string | null;
+}
+
+/**
  * Perceptual QA verdict for a reconstructed mesh: does it actually look like
  * the source photographs it was built from? A vision-model opinion, not a
  * structural check (gltf-transform's round-trip already covers that) - so
@@ -270,10 +322,10 @@ export interface RebakePartRequest {
  * accepting or using the version. See lib/ai/gemini.ts's `evaluateReconstruction`.
  */
 export interface QaResult {
-  /** 0 (no resemblance to the photos) to 100 (matches them closely). */
+  /** 0 (no resemblance to the photos) to 100 (matches them closely). An overall summary; see `defects` for the why. */
   score: number;
-  /** Specific mismatches (missing part, wrong proportions, wrong material/colour). Empty when none were found. */
-  issues: string[];
+  /** Concrete, categorized mismatches (issue #56). Empty when none were found. */
+  defects: MeshDefect[];
   /** Whether a real vision model produced this, or it is the offline placeholder. */
   source: 'gemini' | 'offline';
 }
