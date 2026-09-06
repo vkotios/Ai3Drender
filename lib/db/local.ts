@@ -96,6 +96,7 @@ function toPublicShareLink(link: SceneShareLink & { tokenHash: string }): SceneS
     expiresAt: link.expiresAt,
     revokedAt: link.revokedAt,
     lastAccessedAt: link.lastAccessedAt,
+    lastReminderSentAt: link.lastReminderSentAt,
     createdAt: link.createdAt,
   };
 }
@@ -491,6 +492,7 @@ export class LocalStore implements Store {
         expiresAt: input.expiresAt ?? null,
         revokedAt: null,
         lastAccessedAt: null,
+        lastReminderSentAt: null,
         createdAt: now(),
         tokenHash: hashShareToken(token),
       };
@@ -533,6 +535,21 @@ export class LocalStore implements Store {
     return this.mutate((db) => {
       const link = db.shareLinks.find((l) => l.id === id);
       if (link) link.lastAccessedAt = now();
+    });
+  }
+
+  async listActiveShareLinks(): Promise<SceneShareLink[]> {
+    const db = await this.read();
+    const nowMs = Date.now();
+    return db.shareLinks
+      .filter((l) => !l.revokedAt && (!l.expiresAt || Date.parse(l.expiresAt) > nowMs))
+      .map(toPublicShareLink);
+  }
+
+  markShareLinkReminded(id: Uuid): Promise<void> {
+    return this.mutate((db) => {
+      const link = db.shareLinks.find((l) => l.id === id);
+      if (link) link.lastReminderSentAt = now();
     });
   }
 
