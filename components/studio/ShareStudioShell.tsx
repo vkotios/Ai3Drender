@@ -216,6 +216,9 @@ export function ShareStudioShell({
   const byAsset = new Map<string, Annotation[]>();
   for (const annotation of storeAnnotations) {
     if (annotation.status === 'dismissed') continue;
+    // Threaded replies (studio-only for now) nest under their parent rather
+    // than showing here as their own note - see Annotation.parentAnnotationId.
+    if (annotation.parentAnnotationId) continue;
     byAsset.set(annotation.assetId, [...(byAsset.get(annotation.assetId) ?? []), annotation]);
   }
 

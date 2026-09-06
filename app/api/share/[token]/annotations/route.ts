@@ -1,4 +1,5 @@
 import { apiError, json } from '@/lib/api';
+import { extractMentions } from '@/lib/annotations/mentions';
 import { notifyReviewActivity } from '@/lib/notify/review-activity';
 import { describeAnchor, resolveComponent } from '@/lib/scene/anchor';
 import { referencedAssetVersionIds, resolveShareToken } from '@/lib/share/access';
@@ -50,6 +51,7 @@ export async function POST(request: Request, { params }: Params) {
   if (!version) return apiError('Version not found', 404);
 
   const { componentName, componentRole } = resolveComponent(body.partName ?? null, version.spec);
+  const trimmedBody = body.body.trim();
 
   const annotation = await store.createAnnotation({
     assetId: version.assetId,
@@ -63,11 +65,15 @@ export async function POST(request: Request, { params }: Params) {
     componentName,
     componentRole,
     anchorDescription: describeAnchor(body.point, version.spec.dimensions),
-    body: body.body.trim(),
+    body: trimmedBody,
     source: 'client',
     clientName,
     staleNote: null,
     selectionKind: 'point',
+    // Threaded replies and @mentions are reviewed from the studio panel
+    // only (issue #40) - a share-view note is always a fresh top-level pin.
+    parentAnnotationId: null,
+    mentions: extractMentions(trimmedBody),
   });
 
   // Best-effort - see notifyReviewActivity's doc comment. Never blocks or

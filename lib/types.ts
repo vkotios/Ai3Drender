@@ -604,6 +604,31 @@ export interface Annotation {
    * alone; this is only a heads-up that its context may be stale.
    */
   staleNote: string | null;
+  /**
+   * Set when this note is a reply to another annotation rather than its own
+   * pin. Reuses this same table rather than a separate `annotation_replies`
+   * one: a reply needs the exact same shape (body, source/clientName,
+   * mentions) as a top-level note, and every other field it would otherwise
+   * duplicate (point, normal, partName, componentName/Role,
+   * anchorDescription, assetVersionId, originVersionId/Number, sceneId) is
+   * simply inherited from the parent at creation time - see the annotations
+   * route. Kept one level deep (a reply's own `parentAnnotationId`, if this
+   * were allowed to nest, is rejected by the API) since the panel threads a
+   * note and its replies, not an arbitrary tree.
+   *
+   * A reply is not itself carried forward across a version revision (see
+   * `carryForwardOpenAnnotations`) and is not sent to the model as its own
+   * revision note - only its parent is. It is, however, deleted along with
+   * its parent (cascades in Postgres; mirrored in `LocalStore`).
+   */
+  parentAnnotationId: Uuid | null;
+  /**
+   * Names captured from `@name` tokens in `body`, in first-appearance order.
+   * UI-only for now: rendering an `@mention` distinctly in the panel and
+   * recording who was named. Actually notifying that person is out of scope
+   * here - tracked separately (issue #46).
+   */
+  mentions: string[];
   createdAt: IsoDate;
 }
 

@@ -153,6 +153,10 @@ const toAnnotation = (r: Row): Annotation => ({
   clientName: r.client_name,
   resolvedByVersionId: r.resolved_by_version_id,
   staleNote: r.stale_note,
+  // Rows written before these columns existed round-trip as an ordinary,
+  // unmentioned top-level note.
+  parentAnnotationId: r.parent_annotation_id ?? null,
+  mentions: r.mentions ?? [],
   createdAt: r.created_at,
 });
 
@@ -841,6 +845,8 @@ export class SupabaseStore implements Store {
         source: input.source,
         client_name: input.clientName,
         stale_note: input.staleNote,
+        parent_annotation_id: input.parentAnnotationId,
+        mentions: input.mentions,
       })
       .select()
       .single();
@@ -875,6 +881,7 @@ export class SupabaseStore implements Store {
     if (patch.componentRole !== undefined) update.component_role = patch.componentRole;
     if (patch.anchorDescription !== undefined) update.anchor_description = patch.anchorDescription;
     if (patch.staleNote !== undefined) update.stale_note = patch.staleNote;
+    if (patch.mentions !== undefined) update.mentions = patch.mentions;
     const res = await this.db.from('annotations').update(update).eq('id', id).select().single();
     return toAnnotation(unwrap('updateAnnotation', res));
   }
