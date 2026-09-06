@@ -14,6 +14,9 @@
     "reconcile-storage": "tsx scripts/reconcile-storage.ts"
   },
   "dependencies": {
+    "@gltf-transform/core": "^4.5.0",
+    "@gltf-transform/extensions": "^4.5.0",
+    "@gltf-transform/functions": "^4.5.0",
     "@google/genai": "^1.29.0",
     "@react-three/drei": "^10.7.6",
     "@react-three/fiber": "^9.3.0",

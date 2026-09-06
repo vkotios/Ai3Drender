@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import {
   analyzeFurniture,
   conceptRender,
@@ -13,7 +11,10 @@ import type { Store } from '@/lib/db';
 import { env } from '@/lib/env';
 import { anchorWithinBounds, describeAnchor, formatAnnotationForPrompt, resolveComponent } from '@/lib/scene/anchor';
 
+import type { StageContext } from './context';
 import { backoffMs, isRetryable } from './errors';
+import { runRender } from './render';
+import { storageKeys } from './storage-keys';
 import type {
   Annotation,
   AssetVersion,
@@ -35,23 +36,10 @@ import type {
  *   refine  -> (optionally) synthesize_views -> reconstruct
  */
 
-export interface StageContext {
-  store: Store;
-  job: Job;
-  report: (progress: number, message: string) => Promise<void>;
-}
+export type { StageContext } from './context';
+export { storageKeys };
 
-const key = {
-  source: (projectId: string, ext: string) => `${projectId}/sources/${randomUUID()}.${ext}`,
-  view: (projectId: string, versionId: string, angle: string) =>
-    `${projectId}/views/${versionId}/${angle}.png`,
-  render: (projectId: string, sceneId: string, kind: string, ext: string) =>
-    `${projectId}/renders/${sceneId}/${kind}-${randomUUID()}.${ext}`,
-  mesh: (projectId: string, versionId: string) => `${projectId}/meshes/${versionId}.glb`,
-  preview: (projectId: string, versionId: string) => `${projectId}/previews/${versionId}.png`,
-};
-
-export const storageKeys = key;
+const key = storageKeys;
 
 /** Load source images as bytes so they can be handed to the model layer. */
 async function loadImages(store: Store, images: SourceImage[]): Promise<ImageInput[]> {
@@ -535,6 +523,7 @@ const STAGES: Record<Job['kind'], (ctx: StageContext) => Promise<Record<string, 
   refine: runRefine,
   direct_scene: runDirectScene,
   concept_render: runConceptRender,
+  render: runRender,
 };
 
 /**
