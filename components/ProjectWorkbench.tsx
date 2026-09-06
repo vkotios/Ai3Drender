@@ -466,6 +466,7 @@ function AssetCard({
               </span>
               <Badge tone={STATUS_TONE[asset.status]}>{asset.status.replace(/_/g, ' ')}</Badge>
               {currentVersion?.acceptedAt && <Badge tone="good">accepted</Badge>}
+              {currentVersion?.qaResult && <QaBadge qaResult={currentVersion.qaResult} />}
             </div>
             {currentVersion && (
               <p className="mt-1 text-xs text-shell-400">
@@ -567,5 +568,35 @@ function AssetCard({
         </div>
       )}
     </li>
+  );
+}
+
+/**
+ * Perceptual QA verdict, badge-sized: whether the reconstructed mesh actually
+ * looks like the source photos (see lib/ai/gemini.ts's evaluateReconstruction).
+ *
+ * Always a soft signal - it never blocks Accept/Refine/Delete above, and an
+ * offline result (no GEMINI_API_KEY configured) says exactly that rather than
+ * implying a real check passed.
+ */
+function QaBadge({ qaResult }: { qaResult: NonNullable<AssetVersion['qaResult']> }) {
+  if (qaResult.source === 'offline') {
+    return (
+      <span title="No GEMINI_API_KEY configured, so the mesh was not checked against the photos.">
+        <Badge>qa: offline</Badge>
+      </span>
+    );
+  }
+
+  const tone = qaResult.score >= 80 ? 'good' : qaResult.score >= 50 ? 'warn' : 'bad';
+  const title =
+    qaResult.issues.length > 0
+      ? `Fidelity vs. source photos: ${qaResult.score}/100 - ${qaResult.issues.join('; ')}`
+      : `Fidelity vs. source photos: ${qaResult.score}/100 - no issues flagged`;
+
+  return (
+    <span title={title}>
+      <Badge tone={tone}>qa: {qaResult.score}</Badge>
+    </span>
   );
 }

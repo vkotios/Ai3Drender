@@ -234,6 +234,22 @@ export interface RefinementRequest {
 }
 
 /**
+ * Perceptual QA verdict for a reconstructed mesh: does it actually look like
+ * the source photographs it was built from? A vision-model opinion, not a
+ * structural check (gltf-transform's round-trip already covers that) - so
+ * this is always a soft warning surfaced in the UI, never a blocker on
+ * accepting or using the version. See lib/ai/gemini.ts's `evaluateReconstruction`.
+ */
+export interface QaResult {
+  /** 0 (no resemblance to the photos) to 100 (matches them closely). */
+  score: number;
+  /** Specific mismatches (missing part, wrong proportions, wrong material/colour). Empty when none were found. */
+  issues: string[];
+  /** Whether a real vision model produced this, or it is the offline placeholder. */
+  source: 'gemini' | 'offline';
+}
+
+/**
  * An immutable snapshot of one furniture asset. "Modify and refine" always
  * creates a new version rather than mutating an accepted one, so an approved
  * render can never be silently changed underneath a customer.
@@ -255,6 +271,13 @@ export interface AssetVersion {
   provider: string;
   providerJobId: string | null;
   refinement: RefinementRequest | null;
+  /**
+   * Perceptual fidelity check against the source photos, run once after the
+   * mesh is built. Null until it runs (or if it failed - see reconstruct's
+   * try/catch in lib/pipeline/index.ts) - callers must treat null as "no
+   * opinion yet", not as a passing score.
+   */
+  qaResult: QaResult | null;
   /** Set once a human signs the version off. Accepted versions are read-only. */
   acceptedAt: IsoDate | null;
   createdAt: IsoDate;
