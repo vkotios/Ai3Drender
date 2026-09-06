@@ -40,6 +40,7 @@ const key = {
   render: (projectId: string, sceneId: string, kind: string, ext: string) =>
     `${projectId}/renders/${sceneId}/${kind}-${randomUUID()}.${ext}`,
   mesh: (projectId: string, versionId: string) => `${projectId}/meshes/${versionId}.glb`,
+  preview: (projectId: string, versionId: string) => `${projectId}/previews/${versionId}.png`,
 };
 
 export const storageKeys = key;
@@ -105,6 +106,7 @@ async function runAnalyze(ctx: StageContext): Promise<Record<string, unknown>> {
       .map<SynthesizedView>((i) => ({ angle: i.role, path: i.path, fromSource: true })),
     meshPath: null,
     meshExtentMm: null,
+    previewPath: null,
     provider: getMeshProvider().name,
     providerJobId: null,
     refinement: null,
@@ -285,6 +287,8 @@ async function runRefine(ctx: StageContext): Promise<Record<string, unknown>> {
     views: parent.views,
     meshPath: request.rebuildMesh ? null : parent.meshPath,
     meshExtentMm: request.rebuildMesh ? null : parent.meshExtentMm,
+    // A rebuilt mesh needs its own thumbnail; an unchanged one can reuse the parent's.
+    previewPath: request.rebuildMesh ? null : parent.previewPath,
     provider: parent.provider,
     providerJobId: null,
     refinement: request,
