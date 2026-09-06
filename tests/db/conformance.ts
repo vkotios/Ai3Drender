@@ -192,6 +192,7 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       provider: 'stub',
       providerJobId: null,
       refinement: null,
+      qaResult: null,
       acceptedAt: null,
     });
 
