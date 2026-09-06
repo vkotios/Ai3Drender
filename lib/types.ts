@@ -526,9 +526,25 @@ export type AnnotationStatus = 'open' | 'applied' | 'dismissed';
 
 /**
  * 'point' anchors a note to one clicked spot; 'part' covers every numbered
- * instance of a named part at once (e.g. all four `Legs`), taken as a unit.
+ * instance of a named part at once (e.g. all four `Legs`), taken as a unit;
+ * 'freehand' anchors a drawn stroke across the surface - a line, a circled
+ * region, an "along this whole edge" gesture - richer than either (issue #63).
  */
-export type SelectionKind = 'point' | 'part';
+export type SelectionKind = 'point' | 'part' | 'freehand';
+
+/**
+ * One sample along a freehand stroke, anchored exactly like a 'point'
+ * selection is: a local-space position plus whatever mesh part the raycast
+ * hit at that spot. No new anchoring scheme - just an ordered list of the
+ * same point anchor every other selection kind already uses, which is what
+ * lets the stroke be redrawn along the same silhouette regardless of camera
+ * angle or (within reason) a later mesh revision.
+ */
+export interface StrokePoint {
+  point: Vec3;
+  /** Mesh part this sample landed on, or null off any named part. Raw mesh name (e.g. "Legs 3"), not base-named. */
+  partName: string | null;
+}
 
 /**
  * A note pinned to a point on a piece's geometry.
@@ -587,8 +603,20 @@ export interface Annotation {
   /** Surface normal at the anchor, for orienting the marker. */
   normal: Vec3;
   /**
+   * Ordered samples along a freehand stroke - present only when
+   * `selectionKind` is 'freehand', null for every other kind. `point` above
+   * is the stroke's centroid (marker placement only, the same convention a
+   * 'part' selection's centroid already uses - it exists to place the pin,
+   * not to describe the note's location) and `partName`/`componentName`/
+   * `componentRole` below name only the first part the stroke touched;
+   * `formatAnnotationForPrompt` walks every sample here to name every part
+   * the stroke actually crosses, since a drawn line rarely stays on one.
+   */
+  strokePoints: StrokePoint[] | null;
+  /**
    * Mesh part under the cursor, e.g. "Legs 3", or the base part name ("Legs")
-   * for a whole-part selection. Null on unnamed vendor meshes.
+   * for a whole-part selection, or the first part a freehand stroke touched.
+   * Null on unnamed vendor meshes.
    */
   partName: string | null;
   /** Spec component the part maps to, when it can be resolved. */

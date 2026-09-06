@@ -109,6 +109,7 @@ function SceneContents({
   const patchNode = useStudio((s) => s.patchNode);
   const transforming = useStudio((s) => s.transforming);
   const setTransforming = useStudio((s) => s.setTransforming);
+  const drawing = useStudio((s) => s.drawing);
   const mode = useStudio((s) => s.mode);
   const annotations = useStudio((s) => s.annotations);
   const pendingPin = useStudio((s) => s.pendingPin);
@@ -253,7 +254,7 @@ function SceneContents({
 
       <OrbitControls
         makeDefault
-        enabled={!transforming}
+        enabled={!transforming && !drawing}
         target={[doc.camera.target.x, doc.camera.target.y, doc.camera.target.z]}
         enableDamping
         dampingFactor={0.08}

@@ -2,8 +2,9 @@ import { apiError, json } from '@/lib/api';
 import { extractMentions } from '@/lib/annotations/mentions';
 import { notifyReviewActivity } from '@/lib/notify/review-activity';
 import { describeAnchor, resolveComponent } from '@/lib/scene/anchor';
+import { isValidStrokePoints } from '@/lib/scene/stroke';
 import { referencedAssetVersionIds, resolveShareToken } from '@/lib/share/access';
-import type { Vec3 } from '@/lib/types';
+import type { SelectionKind, StrokePoint, Vec3 } from '@/lib/types';
 
 type Params = { params: Promise<{ token: string }> };
 
@@ -11,6 +12,13 @@ const isVec3 = (value: unknown): value is Vec3 =>
   typeof value === 'object' &&
   value !== null &&
   ['x', 'y', 'z'].every((axis) => Number.isFinite((value as Record<string, unknown>)[axis]));
+
+// A share link can pin a plain point or a freehand stroke - the same two
+// kinds the client-side toggle in ShareStudioShell offers. Whole-part
+// selection stays studio-only for now, so it is deliberately not accepted
+// here even though the studio route allows it.
+const isShareSelectionKind = (value: unknown): value is Extract<SelectionKind, 'point' | 'freehand'> =>
+  value === 'point' || value === 'freehand';
 
 /**
  * Pin a note through a share link.
@@ -36,6 +44,8 @@ export async function POST(request: Request, { params }: Params) {
     point?: unknown;
     normal?: unknown;
     partName?: string | null;
+    selectionKind?: unknown;
+    strokePoints?: unknown;
     assetVersionId?: string;
   };
 
@@ -45,6 +55,19 @@ export async function POST(request: Request, { params }: Params) {
   if (!isVec3(body.point)) return apiError('A valid anchor point is required');
   if (!body.assetVersionId || !referencedAssetVersionIds(scene).has(body.assetVersionId)) {
     return apiError('That piece is not part of this shared scene', 404);
+  }
+
+  const selectionKind: Extract<SelectionKind, 'point' | 'freehand'> = isShareSelectionKind(
+    body.selectionKind,
+  )
+    ? body.selectionKind
+    : 'point';
+  let strokePoints: StrokePoint[] | null = null;
+  if (selectionKind === 'freehand') {
+    if (!isValidStrokePoints(body.strokePoints)) {
+      return apiError('A freehand selection needs at least two sampled stroke points');
+    }
+    strokePoints = body.strokePoints;
   }
 
   const version = await store.getAssetVersion(body.assetVersionId);
@@ -61,6 +84,7 @@ export async function POST(request: Request, { params }: Params) {
     sceneId: scene.id,
     point: body.point,
     normal: isVec3(body.normal) ? body.normal : { x: 0, y: 1, z: 0 },
+    strokePoints,
     partName: body.partName ?? null,
     componentName,
     componentRole,
@@ -69,7 +93,7 @@ export async function POST(request: Request, { params }: Params) {
     source: 'client',
     clientName,
     staleNote: null,
-    selectionKind: 'point',
+    selectionKind,
     // Threaded replies and @mentions are reviewed from the studio panel
     // only (issue #40) - a share-view note is always a fresh top-level pin.
     parentAnnotationId: null,

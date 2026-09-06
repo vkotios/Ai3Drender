@@ -426,7 +426,9 @@ export function StudioShell({
               : mode === 'comment'
                 ? selectionMode === 'part'
                   ? 'Click a piece to note the whole part it belongs to · hold Shift for one exact point'
-                  : 'Click anywhere on a piece to pin a note there · hold Shift to note the whole part'
+                  : selectionMode === 'freehand'
+                    ? 'Click and drag across a piece to draw a stroke, then release to pin a note to it'
+                    : 'Click anywhere on a piece to pin a note there · hold Shift to note the whole part'
                 : 'Drag to orbit · scroll to zoom · click a piece to select it'}
           </p>
         </main>

@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 
 import { Badge, Button, Empty, Field, Panel, TextInput } from '@/components/ui';
 import { useStudio, type LoadedVersion } from '@/lib/studio/store';
-import type { Annotation, ClientApproval, Scene, ShareRole } from '@/lib/types';
+import type { Annotation, ClientApproval, Scene, SelectionKind, ShareRole } from '@/lib/types';
 
 // Same client-only constraint as the authenticated studio - WebGL and drei's
 // HDRI loading do not exist on the server.
@@ -107,6 +107,8 @@ export function ShareStudioShell({
   const setAnnotations = useStudio((s) => s.setAnnotations);
   const pendingPin = useStudio((s) => s.pendingPin);
   const setPendingPin = useStudio((s) => s.setPendingPin);
+  const selectionMode = useStudio((s) => s.selectionMode);
+  const setSelectionMode = useStudio((s) => s.setSelectionMode);
 
   const [clientName, setClientName] = useState('');
   const [draft, setDraft] = useState('');
@@ -170,6 +172,8 @@ export function ShareStudioShell({
           point: pendingPin.point,
           normal: pendingPin.normal,
           partName: pendingPin.partName,
+          selectionKind: pendingPin.selectionKind,
+          strokePoints: pendingPin.strokePoints ?? null,
           assetVersionId: pendingPin.assetVersionId,
         }),
       });
@@ -251,7 +255,11 @@ export function ShareStudioShell({
             />
           )}
           <p className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-shell-950/80 px-3 py-1 text-[11px] text-shell-400">
-            {canComment ? 'Drag to orbit · scroll to zoom · click a piece to leave a note' : 'Drag to orbit · scroll to zoom'}
+            {canComment
+              ? selectionMode === 'freehand'
+                ? 'Drag to orbit · click and drag across a piece to draw a stroke'
+                : 'Drag to orbit · scroll to zoom · click a piece to leave a note'
+              : 'Drag to orbit · scroll to zoom'}
           </p>
         </main>
 
@@ -297,15 +305,30 @@ export function ShareStudioShell({
           {pendingPin ? (
             <Panel title="New note">
               <p className="mb-2 text-[11px] text-shell-400">
-                Pinned to <span className="text-shell-100">{pendingPin.partName ?? 'this surface'}</span> on{' '}
-                {pieceName(pendingPin.assetId)}.
+                {pendingPin.selectionKind === 'freehand' ? (
+                  <>
+                    Drew a stroke across{' '}
+                    <span className="text-shell-100">{pendingPin.partName ?? 'the surface'}</span> on{' '}
+                    {pieceName(pendingPin.assetId)}.
+                  </>
+                ) : (
+                  <>
+                    Pinned to{' '}
+                    <span className="text-shell-100">{pendingPin.partName ?? 'this surface'}</span> on{' '}
+                    {pieceName(pendingPin.assetId)}.
+                  </>
+                )}
               </p>
               <TextInput
                 autoFocus
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && savePin()}
-                placeholder="This leg looks too thick"
+                placeholder={
+                  pendingPin.selectionKind === 'freehand'
+                    ? 'Shave this whole edge down'
+                    : 'This leg looks too thick'
+                }
               />
               <div className="mt-2 flex gap-1.5">
                 <Button
@@ -333,9 +356,31 @@ export function ShareStudioShell({
             </Panel>
           ) : (
             <Panel title="Leave feedback">
-              <p className="text-xs leading-relaxed text-shell-400">
-                Click anywhere on a piece in the viewport to pin a note there.
+              <p className="mb-2 text-xs leading-relaxed text-shell-400">
+                {selectionMode === 'freehand'
+                  ? 'Click and drag across a piece to draw a stroke, then release to pin a note to it.'
+                  : 'Click anywhere on a piece in the viewport to pin a note there.'}
               </p>
+              <div className="flex rounded-md border border-shell-700 p-0.5">
+                {(
+                  [
+                    { value: 'point', label: 'Point' },
+                    { value: 'freehand', label: 'Freehand' },
+                  ] as { value: SelectionKind; label: string }[]
+                ).map(({ value, label }) => (
+                  <button
+                    key={value}
+                    onClick={() => setSelectionMode(value)}
+                    className={`flex-1 rounded px-2 py-1 text-[11px] transition ${
+                      selectionMode === value
+                        ? 'bg-shell-700 text-shell-100'
+                        : 'text-shell-400 hover:text-shell-100'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </Panel>
           )}
 
@@ -357,11 +402,14 @@ export function ShareStudioShell({
                             {annotation.componentName ?? annotation.partName ?? 'surface'} ·{' '}
                             {annotation.anchorDescription}
                           </p>
-                          <div className="mt-1">
+                          <div className="mt-1 flex flex-wrap gap-1">
                             {annotation.source === 'client' ? (
                               <Badge tone="warn">Client · {annotation.clientName}</Badge>
                             ) : (
                               <Badge tone="neutral">Internal</Badge>
+                            )}
+                            {annotation.selectionKind === 'freehand' && (
+                              <Badge tone="neutral">Freehand</Badge>
                             )}
                           </div>
                         </div>

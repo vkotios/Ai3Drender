@@ -1,7 +1,8 @@
 import { apiError, json, withAsset } from '@/lib/api';
 import { extractMentions } from '@/lib/annotations/mentions';
 import { describeAnchor, describeWholePart, resolveComponent } from '@/lib/scene/anchor';
-import type { AnnotationStatus, SelectionKind, Vec3 } from '@/lib/types';
+import { isValidStrokePoints } from '@/lib/scene/stroke';
+import type { AnnotationStatus, SelectionKind, StrokePoint, Vec3 } from '@/lib/types';
 
 type Params = { params: Promise<{ assetId: string }> };
 
@@ -24,19 +25,23 @@ const isVec3 = (value: unknown): value is Vec3 =>
   ['x', 'y', 'z'].every((axis) => Number.isFinite((value as Record<string, unknown>)[axis]));
 
 const isSelectionKind = (value: unknown): value is SelectionKind =>
-  value === 'point' || value === 'part';
+  value === 'point' || value === 'part' || value === 'freehand';
 
 /**
- * Pin a note to a point on the piece, or to a whole named part taken as a
- * unit - or, given `parentAnnotationId`, add a threaded reply to an existing
- * note instead of a new pin.
+ * Pin a note to a point on the piece, to a whole named part taken as a unit,
+ * or to a freehand stroke drawn across the surface - or, given
+ * `parentAnnotationId`, add a threaded reply to an existing note instead of
+ * a new pin.
  *
  * The client sends the anchor in the asset's local space plus whatever mesh
  * part it hit (for a whole-part selection, the centroid of every matching
- * instance and how many there are). The server resolves the part to a spec
- * component and a plain-language location, so the stored note carries the
- * context the model needs even if the mesh is later replaced - a component
- * reference and a short description, never a raw point or vertex set.
+ * instance and how many there are; for a freehand stroke, every sampled
+ * point along the drawn line - see `lib/scene/stroke.ts` - plus that same
+ * centroid and the first part it touched). The server resolves the part to
+ * a spec component and a plain-language location, so the stored note
+ * carries the context the model needs even if the mesh is later replaced -
+ * a component reference and a short description, never a raw point or
+ * vertex set.
  *
  * A reply needs none of that: it inherits every anchor field from its parent
  * (see `Annotation.parentAnnotationId`), so only `body` (and, implicitly,
@@ -52,6 +57,7 @@ export async function POST(request: Request, { params }: Params) {
       partName?: string | null;
       selectionKind?: unknown;
       instanceCount?: unknown;
+      strokePoints?: unknown;
       assetVersionId?: string;
       sceneId?: string | null;
       parentAnnotationId?: string | null;
@@ -87,6 +93,7 @@ export async function POST(request: Request, { params }: Params) {
           staleNote: null,
           parentAnnotationId: parent.id,
           mentions: extractMentions(trimmedBody),
+          strokePoints: parent.strokePoints,
         }),
         201,
       );
@@ -99,6 +106,13 @@ export async function POST(request: Request, { params }: Params) {
       : 'point';
     if (selectionKind === 'part' && !body.partName?.trim()) {
       return apiError('A whole-part selection needs a part name');
+    }
+    let strokePoints: StrokePoint[] | null = null;
+    if (selectionKind === 'freehand') {
+      if (!isValidStrokePoints(body.strokePoints)) {
+        return apiError('A freehand selection needs at least two sampled stroke points');
+      }
+      strokePoints = body.strokePoints;
     }
     const instanceCount =
       typeof body.instanceCount === 'number' && Number.isFinite(body.instanceCount)
@@ -125,6 +139,7 @@ export async function POST(request: Request, { params }: Params) {
         selectionKind,
         point: body.point,
         normal: isVec3(body.normal) ? body.normal : { x: 0, y: 1, z: 0 },
+        strokePoints,
         partName: body.partName ?? null,
         componentName,
         componentRole,

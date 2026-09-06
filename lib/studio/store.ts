@@ -9,6 +9,7 @@ import type {
   SceneDoc,
   SceneNode,
   SelectionKind,
+  StrokePoint,
   Uuid,
 } from '@/lib/types';
 
@@ -48,11 +49,13 @@ export interface PendingPin {
    */
   point: { x: number; y: number; z: number };
   normal: { x: number; y: number; z: number };
-  /** Base part name for a 'part' selection; the exact mesh part for 'point'. */
+  /** Base part name for a 'part' selection; the exact mesh part for 'point'; the first part touched for 'freehand'. */
   partName: string | null;
   selectionKind: SelectionKind;
-  /** Instances the selection covers. Always 1 for 'point'. */
+  /** Instances the selection covers. Always 1 for 'point' and 'freehand'. */
   instanceCount: number;
+  /** Every sampled point along the stroke - set only when `selectionKind` is 'freehand'. */
+  strokePoints?: StrokePoint[] | null;
 }
 
 interface StudioState {
@@ -76,6 +79,13 @@ interface StudioState {
   dirty: boolean;
   /** Suppresses OrbitControls while a transform gizmo is being dragged. */
   transforming: boolean;
+  /**
+   * Suppresses OrbitControls while a freehand stroke is being drawn - the
+   * same reason `transforming` does for a gizmo drag: a click-drag that is
+   * meant to draw across the model must not also orbit the camera under it.
+   * See AssetNode's pointer handlers.
+   */
+  drawing: boolean;
 
   load(scene: Scene, versions: LoadedVersion[], annotations?: Annotation[]): void;
   setMode(mode: StudioMode): void;
@@ -85,6 +95,7 @@ interface StudioState {
   setAnnotations(annotations: Annotation[]): void;
   select(id: string | null): void;
   setTransforming(value: boolean): void;
+  setDrawing(value: boolean): void;
   setDoc(doc: SceneDoc): void;
   patchEnvironment(patch: Partial<SceneDoc['environment']>): void;
   patchCamera(patch: Partial<SceneDoc['camera']>): void;
@@ -107,6 +118,7 @@ export const useStudio = create<StudioState>((set) => ({
   selectedAnnotationId: null,
   dirty: false,
   transforming: false,
+  drawing: false,
 
   load: (scene, versions, annotations = []) =>
     set({
@@ -117,12 +129,14 @@ export const useStudio = create<StudioState>((set) => ({
       selectedId: null,
       selectedAnnotationId: null,
       pendingPin: null,
+      drawing: false,
       dirty: false,
     }),
 
-  // Leaving comment mode drops a half-written pin rather than letting it
-  // reappear unexpectedly the next time the mode is entered.
-  setMode: (mode) => set({ mode, pendingPin: null }),
+  // Leaving comment mode drops a half-written pin (and any stroke in
+  // progress) rather than letting it reappear unexpectedly the next time the
+  // mode is entered.
+  setMode: (mode) => set({ mode, pendingPin: null, drawing: false }),
   setSelectionMode: (selectionMode) => set({ selectionMode }),
   setPendingPin: (pendingPin) => set({ pendingPin }),
   selectAnnotation: (selectedAnnotationId) => set({ selectedAnnotationId }),
@@ -130,6 +144,7 @@ export const useStudio = create<StudioState>((set) => ({
 
   select: (selectedId) => set({ selectedId }),
   setTransforming: (transforming) => set({ transforming }),
+  setDrawing: (drawing) => set({ drawing }),
   setDoc: (doc) => set({ doc, dirty: true }),
 
   patchEnvironment: (patch) =>
