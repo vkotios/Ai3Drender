@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  offlineFloorPlanScene,
   offlineFurnitureSpec,
   offlineMaterialCorrection,
   offlineQaResult,
   offlineResolvePartReference,
   offlineSceneDirection,
 } from '@/lib/ai/offline';
+import { isValidFootprintBoundary } from '@/lib/scene/footprint';
 import { makeMaterial } from '../fixtures';
 
 const HEX = /^#[0-9a-f]{6}$/i;
@@ -147,6 +149,35 @@ describe('offlineSceneDirection', () => {
     const direction = offlineSceneDirection(['Lounge Chair', 'Side Table']);
     expect(direction.rationale).toMatch(/Lounge Chair, Side Table/);
     expect(direction.paletteHex.every((hex) => HEX.test(hex))).toBe(true);
+  });
+});
+
+describe('offlineFloorPlanScene', () => {
+  it('produces a usable, rectangular boundary sized from the image aspect ratio', () => {
+    const proposal = offlineFloorPlanScene(1600, 1200);
+    expect(isValidFootprintBoundary(proposal.boundary)).toBe(true);
+    expect(proposal.boundary).toHaveLength(4);
+    expect(proposal.heightM).toBeCloseTo(proposal.widthM * (1200 / 1600));
+  });
+
+  it('is deterministic for the same image dimensions', () => {
+    expect(offlineFloorPlanScene(1600, 1200)).toEqual(offlineFloorPlanScene(1600, 1200));
+  });
+
+  it('places a couple of placeholder props, never a real project asset', () => {
+    const proposal = offlineFloorPlanScene(1000, 1000);
+    expect(proposal.placements.length).toBeGreaterThan(0);
+    expect(proposal.placements.every((p) => p.assetName === null && p.propKind !== null)).toBe(true);
+  });
+
+  it('keeps every placement within the boundary bounds', () => {
+    const proposal = offlineFloorPlanScene(1000, 1000);
+    const halfW = proposal.widthM / 2;
+    const halfH = proposal.heightM / 2;
+    for (const placement of proposal.placements) {
+      expect(Math.abs(placement.x)).toBeLessThanOrEqual(halfW);
+      expect(Math.abs(placement.z)).toBeLessThanOrEqual(halfH);
+    }
   });
 });
 

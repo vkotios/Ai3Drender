@@ -4,6 +4,7 @@ import {
   MAX_FOOTPRINT_POINTS,
   MIN_FOOTPRINT_POINTS,
   footprintBounds,
+  footprintPointFromImageFraction,
   isValidFootprintBoundary,
   triangulatePolygon,
   wallSegmentPlacement,
@@ -148,5 +149,26 @@ describe('wallsFromBoundary', () => {
       expect(wall.start).toEqual(square[i]);
       expect(wall.end).toEqual(square[(i + 1) % square.length]);
     });
+  });
+});
+
+describe('footprintPointFromImageFraction', () => {
+  it('maps the image centre to the booth origin', () => {
+    expect(footprintPointFromImageFraction(0.5, 0.5, 8, 6)).toEqual({ x: 0, z: 0 });
+  });
+
+  it('maps left/right to -X/+X and top/bottom to -Z/+Z, scaled by the given size', () => {
+    expect(footprintPointFromImageFraction(0, 0.5, 8, 6)).toEqual({ x: -4, z: 0 });
+    expect(footprintPointFromImageFraction(1, 0.5, 8, 6)).toEqual({ x: 4, z: 0 });
+    expect(footprintPointFromImageFraction(0.5, 0, 8, 6)).toEqual({ x: 0, z: -3 });
+    expect(footprintPointFromImageFraction(0.5, 1, 8, 6)).toEqual({ x: 0, z: 3 });
+  });
+
+  it('clamps an out-of-range fraction instead of extrapolating past the image', () => {
+    expect(footprintPointFromImageFraction(-0.2, 1.5, 8, 6)).toEqual({ x: -4, z: 3 });
+  });
+
+  it('treats a non-finite fraction as the centre', () => {
+    expect(footprintPointFromImageFraction(NaN, 0.5, 8, 6)).toEqual({ x: 0, z: 0 });
   });
 });

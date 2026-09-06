@@ -371,6 +371,80 @@ export const SCENE_COMMAND_SCHEMA = {
   required: ['mutations', 'unresolved'],
 } as const;
 
+/** A point on the floor-plan image itself, as a fraction of its width/height - see `FLOOR_PLAN_SCENE_SCHEMA`. */
+const imageFraction = {
+  type: 'OBJECT',
+  properties: {
+    u: { type: 'NUMBER', description: 'Fraction of the image width: 0 at the left edge, 1 at the right edge.' },
+    v: { type: 'NUMBER', description: 'Fraction of the image height: 0 at the top edge, 1 at the bottom edge.' },
+  },
+  required: ['u', 'v'],
+} as const;
+
+/** See `generateSceneFromFloorPlan` in lib/ai/gemini.ts (issue #58). */
+export const FLOOR_PLAN_SCENE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    boundary: {
+      type: 'ARRAY',
+      items: imageFraction,
+      description:
+        'Ordered polygon vertices tracing the outer boundary of the booth/room floor area shown ' +
+        'in the plan (at least 3 points) - the wall line itself, not any furniture inside it.',
+    },
+    widthM: {
+      type: 'NUMBER',
+      nullable: true,
+      description:
+        'Real-world width, in metres, of the FULL image (left edge to right edge) - only when a ' +
+        'printed scale bar, dimension line or room measurement in the plan makes this a reliable ' +
+        'reading. Null when no such reference is visible; never guess from typical room sizes.',
+    },
+    placements: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          assetName: {
+            type: 'STRING',
+            nullable: true,
+            description:
+              'Exact name of a candidate piece (from the "Available pieces" list) this placement ' +
+              'stages, copied verbatim. Null when no listed piece plausibly matches this spot.',
+          },
+          propKind: {
+            type: 'STRING',
+            nullable: true,
+            format: 'enum',
+            enum: ['plinth', 'rug', 'partition', 'planter', 'side_table', 'floor_lamp'],
+            description:
+              'A generic staging prop to place here instead, only when assetName is null and the ' +
+              'plan shows some simple furnishing (a rug, a low table, a planter...) with no listed ' +
+              'piece to match it.',
+          },
+          name: {
+            type: 'STRING',
+            nullable: true,
+            description: "Display label for this placement. Null to use the matched piece's or prop's own name.",
+          },
+          u: imageFraction.properties.u,
+          v: imageFraction.properties.v,
+          rotationDegrees: {
+            type: 'NUMBER',
+            nullable: true,
+            description: 'Facing angle in degrees, 0 = facing the bottom edge of the image. Null defaults to 0.',
+          },
+        },
+        required: ['u', 'v'],
+      },
+      description:
+        'Where to stage furniture within the boundary - one entry per piece drawn or clearly ' +
+        'implied by the plan. Empty when the plan shows an empty shell with nothing to place.',
+    },
+  },
+  required: ['boundary', 'placements'],
+} as const;
+
 export const SCENE_DIRECTION_SCHEMA = {
   type: 'OBJECT',
   properties: {

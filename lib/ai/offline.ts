@@ -5,7 +5,9 @@ import {
   type RawSceneMutation,
   type SceneCommandResult,
 } from '@/lib/scene/command';
+import { resolveScaleM } from '@/lib/scene/floorplan-scene';
 import type {
+  FloorPlanSceneProposal,
   FurnitureSpec,
   MaterialLibraryEntry,
   MaterialSpec,
@@ -454,6 +456,48 @@ export function offlineSceneDirection(pieces: string[]): SceneDirection {
       'Soft overhead key at roughly 45 degrees, low-intensity fill from the aisle side to keep ' +
       'shadow detail, and a warm accent grazing the back wall for depth.',
     suggestedProps: ['rug', 'plinth', 'planter'],
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Offline floor-plan-to-scene generation (issue #58)                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Deterministic stand-in for `generateSceneFromFloorPlan`, used when
+ * GEMINI_API_KEY is unset. It cannot see the plan at all, so rather than
+ * guess at a boundary or a furniture layout it hands back a plain rectangle
+ * sized from the image's own aspect ratio (see `resolveScaleM` - same
+ * scaling a manual underlay upload uses) and two placeholder staging props
+ * roughly centred in it - enough to open in the studio and confirm the whole
+ * upload-generate-stage flow works end to end offline, with issue #52's
+ * manual trace and the ordinary "Add a piece" panel left to do the real work
+ * once a Gemini key is configured.
+ */
+export function offlineFloorPlanScene(imageWidthPx: number, imageHeightPx: number): FloorPlanSceneProposal {
+  const { widthM, heightM } = resolveScaleM(null, imageWidthPx, imageHeightPx);
+  const halfW = widthM / 2;
+  const halfH = heightM / 2;
+  return {
+    boundary: [
+      { x: -halfW, z: -halfH },
+      { x: halfW, z: -halfH },
+      { x: halfW, z: halfH },
+      { x: -halfW, z: halfH },
+    ],
+    widthM,
+    heightM,
+    placements: [
+      { assetName: null, propKind: 'rug', name: null, x: 0, z: 0, rotationDegrees: 0 },
+      {
+        assetName: null,
+        propKind: 'plinth',
+        name: null,
+        x: 0,
+        z: Math.max(0, Math.min(halfH - 0.5, 1.2)),
+        rotationDegrees: 0,
+      },
+    ],
   };
 }
 

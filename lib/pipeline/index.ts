@@ -6,9 +6,11 @@ import {
   correctMaterial,
   directScene,
   evaluateReconstruction,
+  generateSceneFromFloorPlan,
   refineSpec,
   resolvePartReference,
   synthesizeViews,
+  type FloorPlanCandidate,
   type ImageInput,
 } from '@/lib/ai/gemini';
 import { getMeshProvider } from '@/lib/ai/mesh';
@@ -19,6 +21,7 @@ import { renderMeshViews } from '@/lib/ai/qa/render';
 import type { Store } from '@/lib/db';
 import { env, hasGemini } from '@/lib/env';
 import { anchorWithinBounds, describeAnchor, formatAnnotationForPrompt, resolveComponent } from '@/lib/scene/anchor';
+import { buildSceneFromFloorPlanProposal, type FloorPlanAssetCandidate } from '@/lib/scene/floorplan-scene';
 
 import type { StageContext } from './context';
 import { backoffMs, isRetryable } from './errors';
@@ -554,6 +557,71 @@ async function runDirectScene(ctx: StageContext): Promise<Record<string, unknown
 }
 
 /* -------------------------------------------------------------------------- */
+/* Stage 5b: one-click floor-plan-to-scene generation (issue #58)             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Read an uploaded floor-plan image and produce a whole new, populated
+ * `SceneDoc` from it in one job: a traced booth boundary plus staged
+ * furniture - the "one click" counterpart to issue #52's manual
+ * underlay-and-trace flow, which the result remains fully editable with (see
+ * `lib/scene/floorplan-scene.ts`'s header comment). Self-contained, like
+ * `rebake_part`: no follow-on job, and unlike every other stage here it
+ * doesn't operate on an existing scene - it creates one.
+ */
+async function runGenerateSceneFromFloorPlan(ctx: StageContext): Promise<Record<string, unknown>> {
+  const { store, job } = ctx;
+  const projectId = job.projectId;
+  const floorPlanPath = job.input.floorPlanPath as string;
+  const sceneName = (job.input.sceneName as string | undefined)?.trim() || 'Stand from floor plan';
+  const imageWidthPx = job.input.imageWidthPx as number;
+  const imageHeightPx = job.input.imageHeightPx as number;
+
+  const project = await store.getProject(projectId);
+
+  await ctx.report(0.15, 'Reading the floor plan');
+  const blob = await store.getBlob(floorPlanPath);
+  if (!blob) throw new Error('floorplan_scene: the uploaded floor plan is missing');
+
+  await ctx.report(0.3, 'Checking finished pieces available to place');
+  // Only pieces the operator would actually see offered in the "Add a piece"
+  // panel today (see components/studio/Outliner.tsx's "finished pieces") are
+  // valid placement candidates - staging a piece whose mesh hasn't finished
+  // reconstructing yet would just show as a placeholder box.
+  const assets = await store.listAssets(projectId);
+  const candidates: FloorPlanAssetCandidate[] = [];
+  for (const asset of assets) {
+    if (asset.status !== 'ready' || !asset.currentVersionId) continue;
+    const version = await store.getAssetVersion(asset.currentVersionId);
+    if (version) candidates.push({ asset, version });
+  }
+
+  await ctx.report(0.5, 'Reading the boundary and furniture layout');
+  const { proposal, source } = await generateSceneFromFloorPlan(
+    { bytes: blob.bytes, mimeType: blob.contentType },
+    candidates.map(
+      (c): FloorPlanCandidate => ({
+        name: c.asset.name || c.version.spec.displayName,
+        category: c.version.spec.category,
+        widthMm: c.version.spec.dimensions.widthMm,
+        depthMm: c.version.spec.dimensions.depthMm,
+        heightMm: c.version.spec.dimensions.heightMm,
+      }),
+    ),
+    imageWidthPx,
+    imageHeightPx,
+    project?.brief ?? null,
+  );
+
+  await ctx.report(0.8, 'Placing furniture');
+  const { doc, warnings } = buildSceneFromFloorPlanProposal(proposal, candidates, floorPlanPath);
+
+  const scene = await store.createScene({ projectId, name: sceneName, doc });
+
+  return { sceneId: scene.id, source, warnings };
+}
+
+/* -------------------------------------------------------------------------- */
 /* Stage 6: fast concept render over a viewport capture                       */
 /* -------------------------------------------------------------------------- */
 
@@ -823,6 +891,7 @@ const STAGES: Record<Job['kind'], (ctx: StageContext) => Promise<Record<string, 
   concept_render: runConceptRender,
   render: runRender,
   rebake_part: runRebakePart,
+  floorplan_scene: runGenerateSceneFromFloorPlan,
 };
 
 /**

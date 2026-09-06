@@ -10,19 +10,25 @@ import {
   type SceneCommandResult,
   type SceneMutation,
 } from '@/lib/scene/command';
+import { resolveScaleM } from '@/lib/scene/floorplan-scene';
+import { footprintPointFromImageFraction } from '@/lib/scene/footprint';
 import type {
+  FloorPlanPlacementSuggestion,
+  FloorPlanSceneProposal,
   FurnitureSpec,
   MaterialLibraryEntry,
   MaterialSpec,
   MeshDefect,
   MeshDefectCategory,
   MeshDefectSeverity,
+  PropKind,
   QaResult,
   SceneDirection,
   SceneDoc,
 } from '@/lib/types';
 
 import {
+  offlineFloorPlanScene,
   offlineFurnitureSpec,
   offlineInterpretSceneCommand,
   offlineMaterialCorrection,
@@ -31,6 +37,7 @@ import {
   offlineSceneDirection,
 } from './offline';
 import {
+  FLOOR_PLAN_SCENE_SCHEMA,
   FURNITURE_SPEC_SCHEMA,
   MATERIAL_CORRECTION_SCHEMA,
   PART_REFERENCE_SCHEMA,
@@ -902,4 +909,136 @@ ${options.instruction ? `\nAdditional direction for this render:\n${options.inst
     bytes: new Uint8Array(Buffer.from(part.inlineData.data, 'base64')),
     mimeType: part.inlineData.mimeType ?? 'image/png',
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 8. Floor plan -> traced boundary + furniture layout                        */
+/* -------------------------------------------------------------------------- */
+
+/** One project piece offered to the model as a placement candidate - see `generateSceneFromFloorPlan`. */
+export interface FloorPlanCandidate {
+  /** Exact display name the model must copy back verbatim to reference this piece - see `FloorPlanPlacementSuggestion.assetName`. */
+  name: string;
+  category: string;
+  widthMm: number;
+  depthMm: number;
+  heightMm: number;
+}
+
+const KNOWN_PROP_KINDS: readonly PropKind[] = ['plinth', 'rug', 'partition', 'planter', 'side_table', 'floor_lamp'];
+
+function normalizePropKind(value: unknown): PropKind | null {
+  return typeof value === 'string' && (KNOWN_PROP_KINDS as readonly string[]).includes(value)
+    ? (value as PropKind)
+    : null;
+}
+
+interface RawFloorPlanPlacement {
+  assetName?: string | null;
+  propKind?: string | null;
+  name?: string | null;
+  u: number;
+  v: number;
+  rotationDegrees?: number | null;
+}
+
+interface RawFloorPlanScene {
+  boundary: { u: number; v: number }[];
+  widthM?: number | null;
+  placements: RawFloorPlanPlacement[];
+}
+
+/**
+ * Read a booth boundary and furniture layout off an uploaded floor-plan
+ * image - issue #58's "one-click" counterpart to issue #52's manual
+ * underlay-and-trace flow. Reasons in image-fraction coordinates (see
+ * `FLOOR_PLAN_SCENE_SCHEMA`) because that is what a vision model can actually
+ * perceive reliably; this function is what converts that into the
+ * booth-local metres the rest of the app expects (see
+ * `footprintPointFromImageFraction`), using `imageWidthPx`/`imageHeightPx` -
+ * the uploaded image's own pixel dimensions - to keep the aspect ratio
+ * correct exactly like a manual underlay upload does (see `resolveScaleM`).
+ *
+ * `candidates` is the project's own finished furniture, offered by exact name
+ * so a placement can reference (and therefore actually stage) a real piece
+ * rather than only ever falling back to a generic prop. Never throws on a
+ * malformed individual boundary point or placement - each is just dropped, so
+ * one bad entry never sinks the rest of the layout (mirrors
+ * `interpretSceneCommand`'s per-mutation tolerance).
+ */
+export async function generateSceneFromFloorPlan(
+  image: { bytes: Uint8Array; mimeType: string },
+  candidates: FloorPlanCandidate[],
+  imageWidthPx: number,
+  imageHeightPx: number,
+  brief?: string | null,
+): Promise<{ proposal: FloorPlanSceneProposal; source: 'gemini' | 'offline' }> {
+  if (!hasGemini) return { proposal: offlineFloorPlanScene(imageWidthPx, imageHeightPx), source: 'offline' };
+
+  const inventory = candidates.length
+    ? candidates.map((c) => `- ${c.name} (${c.category}), ${c.widthMm}x${c.depthMm}x${c.heightMm}mm`).join('\n')
+    : '(none yet - every placement should use a generic prop kind instead)';
+
+  const response = await ai().models.generateContent({
+    model: env.geminiTextModel,
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `
+You are reading a photograph or scan of a 2D architectural floor plan for a furniture
+manufacturer's trade-show booth, so it can be staged automatically from this single image.
+
+Available pieces already built for this stand (reference these by exact name when the plan
+plausibly shows one of them; otherwise use a generic prop kind):
+${inventory}
+
+${brief ? `Project art direction, for context only:\n${brief}\n` : ''}
+Trace the outer boundary of the booth/room floor area as an ordered polygon (at least 3
+points, going around it in one direction, each point a fraction of the image's own width and
+height). Then suggest where furniture belongs within that boundary, each placement also given
+as a fraction of the image.
+
+Only set widthM when the plan itself prints a scale bar, dimension line or room measurement
+you can actually read - never guess a plausible-looking room size out of thin air.
+`.trim(),
+          },
+          { inlineData: { mimeType: image.mimeType, data: toBase64(image.bytes) } },
+        ],
+      },
+    ],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: FLOOR_PLAN_SCENE_SCHEMA as never,
+      temperature: 0.2,
+    },
+  });
+
+  const parsed = parseJson<RawFloorPlanScene>(response.text ?? '', 'generateSceneFromFloorPlan');
+  const { widthM, heightM } = resolveScaleM(parsed.widthM, imageWidthPx, imageHeightPx);
+
+  const boundary = Array.isArray(parsed.boundary)
+    ? parsed.boundary
+        .filter((p) => Number.isFinite(p?.u) && Number.isFinite(p?.v))
+        .map((p) => footprintPointFromImageFraction(p.u, p.v, widthM, heightM))
+    : [];
+
+  const placements: FloorPlanPlacementSuggestion[] = Array.isArray(parsed.placements)
+    ? parsed.placements
+        .filter((p) => Number.isFinite(p?.u) && Number.isFinite(p?.v))
+        .map((p) => {
+          const point = footprintPointFromImageFraction(p.u, p.v, widthM, heightM);
+          return {
+            assetName: p.assetName?.trim() || null,
+            propKind: normalizePropKind(p.propKind),
+            name: p.name?.trim() || null,
+            x: point.x,
+            z: point.z,
+            rotationDegrees: Number.isFinite(p.rotationDegrees) ? (p.rotationDegrees as number) : 0,
+          };
+        })
+    : [];
+
+  return { proposal: { boundary, widthM, heightM, placements }, source: 'gemini' };
 }
