@@ -60,6 +60,37 @@ Apply the migrations in `supabase/migrations/` in order (schema, RLS, the `rende
 bucket, then annotations and renders). Every table is reachable only through a project the
 caller owns.
 
+```bash
+SLACK_WEBHOOK_URL=...       # post client review activity into a Slack channel
+RESEND_API_KEY=...          # email the owner on the same activity, plus share-link reminders
+```
+
+### Notifications
+
+Right now, seeing that a client left a note or set an approval verdict on a share link means
+opening the studio. Two independent, optional channels close that gap, both wired through
+`lib/notify/` following the same adapter-with-a-graceful-fallback shape as `MeshProvider` and
+Gemini — unset either and that channel is silently skipped, never a hard dependency for the
+client's note or verdict actually saving:
+
+- **Slack** (`SLACK_WEBHOOK_URL`) — a plain [Incoming
+  Webhook](https://api.slack.com/messaging/webhooks): one POST of `{ text }`, no app install.
+  Posts when a client pins a note or sets an approval verdict.
+- **Email** (`RESEND_API_KEY`) — via [Resend](https://resend.com), chosen for the same reason
+  the mesh vendors are reached with plain `fetch`: one authenticated JSON POST, no SDK. Postmark
+  is an equally simple drop-in if you'd rather use that instead — see `lib/notify/email.ts`.
+  Two triggers:
+  - The owner is emailed on the same note/verdict activity Slack is posted for.
+  - `POST /api/notifications/reminders/tick` emails the owner about any share link nobody has
+    opened within `REMINDER_THRESHOLD_DAYS` (default 3) — see
+    [Deployment](#deployment) for how to schedule it. A link is "unopened" per
+    `SceneShareLink.lastAccessedAt`, the same activity marker the app already tracks; once it's
+    been opened at least once the reminder stops, whether or not a verdict has been left yet.
+
+**Deferred:** replying to a review note by plain email (no login) — Ziflow-style inbound email
+parsing is a materially larger scope (a receiving address, a mail webhook, matching a reply back
+to its thread) than fits alongside the two channels above. See issue #46.
+
 > **The two `NEXT_PUBLIC_` values must be set at BUILD time, not just at run time.** The server
 > reads them at runtime, but Next.js inlines them into the browser bundle when the app is
 > built. Supplying them only at run time produces a half-configured deployment: the server
@@ -272,6 +303,11 @@ simply never taken and the route still requires a session, same as before.
   `Authorization: Bearer <CRON_SECRET>` on whatever interval you like. This works on any host,
   including Hobby-tier Vercel, since the scheduling happens outside the app entirely.
 
+The reminder sweep (see [Notifications](#notifications)) is scheduled exactly the same way, just
+pointed at `POST /api/notifications/reminders/tick` instead — `vercel.json` already declares it
+daily. It no-ops instantly with `RESEND_API_KEY` unset, so it's harmless to leave scheduled even
+before email is configured.
+
 **What this PR could and couldn't verify locally:** the standalone worker was run and confirmed
 to drain a real job end-to-end against `LocalStore` (see the PR description). The
 `CRON_SECRET` bearer-auth branch on `/api/jobs/tick` was exercised directly with `curl` against
@@ -309,6 +345,7 @@ lib/
   ai/offline.ts          deterministic fallback when no key is set
   ai/mesh/               MeshProvider port, vendor adapters, GLB writer, massing generator
   db/                    Store port; Supabase and local-disk implementations
+  notify/                Slack/email adapters, review-activity fan-out, reminder sweep
   pipeline/              job stages and the runner
   scene/                 booth presets, scene defaults, anchor resolution
   studio/                client store and exporters

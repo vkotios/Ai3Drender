@@ -143,6 +143,7 @@ describe('accepted asset version immutability', () => {
       provider: 'stub',
       providerJobId: null,
       refinement: null,
+      qaResult: null,
       acceptedAt: null,
     });
 
@@ -172,6 +173,7 @@ describe('accepted asset version immutability', () => {
       provider: 'stub',
       providerJobId: null,
       refinement: null,
+      qaResult: null,
       acceptedAt: null,
     });
 

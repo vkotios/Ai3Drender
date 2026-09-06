@@ -79,6 +79,10 @@ describe('pipeline: analyze -> synthesize_views -> reconstruct', () => {
     // The offline analyzer infers a category from the filename ("sofa-front.jpg").
     expect(version!.spec.category).toBe('sofa');
     expect(version!.spec.dimensionConfidence).toBe('rough');
+    // No GEMINI_API_KEY in this test env: the perceptual QA step still runs
+    // and stores a result, but it's the documented offline placeholder, not a
+    // real vision-model verdict.
+    expect(version!.qaResult).toEqual({ score: 100, issues: [], source: 'offline' });
 
     const meshBlob = await store.getBlob(version!.meshPath!);
     expect(meshBlob).not.toBeNull();
@@ -142,6 +146,8 @@ describe('pipeline: refine', () => {
       selectionKind: 'point',
       anchorDescription: 'front-left, 300 mm above the floor',
       body: 'Make these legs slimmer.',
+      parentAnnotationId: null,
+      mentions: [],
     });
     expect(annotation.status).toBe('open');
 
@@ -213,6 +219,8 @@ describe('pipeline: refine', () => {
       selectionKind: 'point',
       anchorDescription: 'centre, 0 mm above the floor',
       body: 'Unrelated note.',
+      parentAnnotationId: null,
+      mentions: [],
     });
     expect((await store.getAnnotation(annotation.id))?.status).toBe('open');
   });

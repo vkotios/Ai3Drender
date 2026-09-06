@@ -2,7 +2,7 @@ import { getLocalStoreForShareAccess } from '@/lib/db';
 import type { Store } from '@/lib/db';
 import { hasSupabase } from '@/lib/env';
 import { createSupabaseShareClient } from '@/lib/supabase/server';
-import type { Scene } from '@/lib/types';
+import type { Scene, ShareRole } from '@/lib/types';
 
 import { SupabaseStore } from '@/lib/db/supabase';
 
@@ -25,6 +25,15 @@ import { SupabaseStore } from '@/lib/db/supabase';
 export interface ShareContext {
   store: Store;
   scene: Scene;
+  /**
+   * The grant the resolved token actually carries. 'viewer' is orbit/inspect
+   * only - every route that lets the share view write something (pinning a
+   * note, setting the approval verdict) has to check this itself, the same
+   * way the RLS policies gate the equivalent Supabase-mode writes on it (see
+   * supabase/migrations/0011_viewer_share_role.sql) - resolving the token is
+   * authentication, not authorization for what it can write.
+   */
+  role: ShareRole;
 }
 
 export type ShareResolution =
@@ -44,7 +53,7 @@ async function resolveLocal(token: string): Promise<ShareResolution> {
   const scene = await store.getScene(link.sceneId);
   if (!scene) return { ok: false, status: 404, message: 'The shared scene no longer exists' };
   await store.touchShareLink(link.id);
-  return { ok: true, context: { store, scene } };
+  return { ok: true, context: { store, scene, role: link.role } };
 }
 
 async function resolveSupabase(token: string): Promise<ShareResolution> {
@@ -54,6 +63,11 @@ async function resolveSupabase(token: string): Promise<ShareResolution> {
   if (!sceneId) {
     return { ok: false, status: 404, message: 'This share link is invalid, revoked or expired' };
   }
+  // Same header-derived token check as active_share_scene_id() above, just
+  // returning the link's role instead of its scene - see
+  // supabase/migrations/0011_viewer_share_role.sql.
+  const { data: role, error: roleError } = await client.rpc('active_share_role');
+  if (roleError) throw new Error(`share token role check failed: ${roleError.message}`);
   const store = new SupabaseStore(client);
   const scene = await store.getScene(sceneId as string);
   if (!scene) {
@@ -63,7 +77,7 @@ async function resolveSupabase(token: string): Promise<ShareResolution> {
   void client.rpc('touch_active_share_link').then(({ error: touchError }) => {
     if (touchError) console.error('[share] touch_active_share_link failed', touchError.message);
   });
-  return { ok: true, context: { store, scene } };
+  return { ok: true, context: { store, scene, role: (role as ShareRole | null) ?? 'commenter' } };
 }
 
 /** Validate a raw bearer token and resolve the scene it grants read access to. */

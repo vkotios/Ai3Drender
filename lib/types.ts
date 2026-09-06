@@ -234,6 +234,22 @@ export interface RefinementRequest {
 }
 
 /**
+ * Perceptual QA verdict for a reconstructed mesh: does it actually look like
+ * the source photographs it was built from? A vision-model opinion, not a
+ * structural check (gltf-transform's round-trip already covers that) - so
+ * this is always a soft warning surfaced in the UI, never a blocker on
+ * accepting or using the version. See lib/ai/gemini.ts's `evaluateReconstruction`.
+ */
+export interface QaResult {
+  /** 0 (no resemblance to the photos) to 100 (matches them closely). */
+  score: number;
+  /** Specific mismatches (missing part, wrong proportions, wrong material/colour). Empty when none were found. */
+  issues: string[];
+  /** Whether a real vision model produced this, or it is the offline placeholder. */
+  source: 'gemini' | 'offline';
+}
+
+/**
  * An immutable snapshot of one furniture asset. "Modify and refine" always
  * creates a new version rather than mutating an accepted one, so an approved
  * render can never be silently changed underneath a customer.
@@ -255,6 +271,13 @@ export interface AssetVersion {
   provider: string;
   providerJobId: string | null;
   refinement: RefinementRequest | null;
+  /**
+   * Perceptual fidelity check against the source photos, run once after the
+   * mesh is built. Null until it runs (or if it failed - see reconstruct's
+   * try/catch in lib/pipeline/index.ts) - callers must treat null as "no
+   * opinion yet", not as a passing score.
+   */
+  qaResult: QaResult | null;
   /** Set once a human signs the version off. Accepted versions are read-only. */
   acceptedAt: IsoDate | null;
   createdAt: IsoDate;
@@ -359,8 +382,34 @@ export interface SceneDoc {
  *
  * Set only through the read-only share view (`/share/[token]`) - the owner
  * never sets this directly, it is what the client told them.
+ *
+ * Five states, modelled after Ziflow's per-reviewer verdict (see
+ * `docs/competitive-gap-analysis.md` §05, issue #41):
+ *   - `pending` - the default; no verdict submitted yet.
+ *   - `approved` - signed off outright.
+ *   - `approved_with_changes` - signed off, but see the note/notes - the
+ *     workshop can proceed without waiting on a second round.
+ *   - `changes_requested` - blocking; the stand needs rework before sign-off.
+ *   - `not_relevant` - this scene is not this client's to review (e.g. an
+ *     internal-only variant, or a stand superseded by another share link).
+ *
+ * This stays a single field on `Scene` rather than a per-annotation reviewer
+ * verdict: approval here is a sign-off on the whole staged stand, not on any
+ * one note, and every annotation already carries its own independent
+ * `AnnotationStatus` lifecycle (open/applied/dismissed). Layering a second,
+ * parallel verdict onto each annotation would answer a question nobody asked
+ * ("did the client fully review file X" - Ziflow's design point, for a
+ * multi-asset review queue) while this app reviews one exhibition stand at a
+ * time. Five values on this existing field expresses everything the issue
+ * asks for without that extra structure - see the PR description for the
+ * full reasoning.
  */
-export type ClientApproval = 'pending' | 'approved' | 'changes_requested';
+export type ClientApproval =
+  | 'pending'
+  | 'approved'
+  | 'approved_with_changes'
+  | 'changes_requested'
+  | 'not_relevant';
 
 export interface Scene {
   id: Uuid;
@@ -555,6 +604,31 @@ export interface Annotation {
    * alone; this is only a heads-up that its context may be stale.
    */
   staleNote: string | null;
+  /**
+   * Set when this note is a reply to another annotation rather than its own
+   * pin. Reuses this same table rather than a separate `annotation_replies`
+   * one: a reply needs the exact same shape (body, source/clientName,
+   * mentions) as a top-level note, and every other field it would otherwise
+   * duplicate (point, normal, partName, componentName/Role,
+   * anchorDescription, assetVersionId, originVersionId/Number, sceneId) is
+   * simply inherited from the parent at creation time - see the annotations
+   * route. Kept one level deep (a reply's own `parentAnnotationId`, if this
+   * were allowed to nest, is rejected by the API) since the panel threads a
+   * note and its replies, not an arbitrary tree.
+   *
+   * A reply is not itself carried forward across a version revision (see
+   * `carryForwardOpenAnnotations`) and is not sent to the model as its own
+   * revision note - only its parent is. It is, however, deleted along with
+   * its parent (cascades in Postgres; mirrored in `LocalStore`).
+   */
+  parentAnnotationId: Uuid | null;
+  /**
+   * Names captured from `@name` tokens in `body`, in first-appearance order.
+   * UI-only for now: rendering an `@mention` distinctly in the panel and
+   * recording who was named. Actually notifying that person is out of scope
+   * here - tracked separately (issue #46).
+   */
+  mentions: string[];
   createdAt: IsoDate;
 }
 
@@ -586,6 +660,8 @@ export interface SceneShareLink {
   expiresAt: IsoDate | null;
   revokedAt: IsoDate | null;
   lastAccessedAt: IsoDate | null;
+  /** Set when the reminder sweep last emailed the owner about this link. See `Store.markShareLinkReminded`. */
+  lastReminderSentAt: IsoDate | null;
   createdAt: IsoDate;
 }
 
