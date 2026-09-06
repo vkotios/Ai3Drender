@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "worker": "tsx scripts/worker.ts"
+    "worker": "tsx scripts/worker.ts",
+    "reconcile-storage": "tsx scripts/reconcile-storage.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

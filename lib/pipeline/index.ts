@@ -40,6 +40,7 @@ const key = {
   render: (projectId: string, sceneId: string, kind: string, ext: string) =>
     `${projectId}/renders/${sceneId}/${kind}-${randomUUID()}.${ext}`,
   mesh: (projectId: string, versionId: string) => `${projectId}/meshes/${versionId}.glb`,
+  preview: (projectId: string, versionId: string) => `${projectId}/previews/${versionId}.png`,
 };
 
 export const storageKeys = key;
@@ -91,7 +92,13 @@ async function runAnalyze(ctx: StageContext): Promise<Record<string, unknown>> {
 
   await store.updateAsset(assetId, { status: 'analyzing' });
   await ctx.report(0.35, 'Reading form, materials and dimensions');
-  const { spec, source } = await analyzeFurniture(images, project?.brief ?? null);
+  // Offer the account's known materials as candidates so the vision pass
+  // matches the piece against real materials instead of re-inventing a
+  // near-miss of one that already exists.
+  const libraryCandidates = project
+    ? await store.listMaterialLibraryEntries(project.ownerId)
+    : [];
+  const { spec, source } = await analyzeFurniture(images, project?.brief ?? null, libraryCandidates);
 
   await ctx.report(0.8, 'Recording specification');
   const version = await store.createAssetVersion({
@@ -105,6 +112,7 @@ async function runAnalyze(ctx: StageContext): Promise<Record<string, unknown>> {
       .map<SynthesizedView>((i) => ({ angle: i.role, path: i.path, fromSource: true })),
     meshPath: null,
     meshExtentMm: null,
+    previewPath: null,
     provider: getMeshProvider().name,
     providerJobId: null,
     refinement: null,
@@ -285,6 +293,8 @@ async function runRefine(ctx: StageContext): Promise<Record<string, unknown>> {
     views: parent.views,
     meshPath: request.rebuildMesh ? null : parent.meshPath,
     meshExtentMm: request.rebuildMesh ? null : parent.meshExtentMm,
+    // A rebuilt mesh needs its own thumbnail; an unchanged one can reuse the parent's.
+    previewPath: request.rebuildMesh ? null : parent.previewPath,
     provider: parent.provider,
     providerJobId: null,
     refinement: request,
