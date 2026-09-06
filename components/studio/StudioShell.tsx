@@ -322,7 +322,7 @@ export function StudioShell({
 
         <div className="ml-auto flex items-center gap-1.5">
           <div className="mr-1 flex rounded-md border border-shell-700 p-0.5">
-            {(['layout', 'comment'] as StudioMode[]).map((value) => (
+            {(['layout', 'comment', 'floorplan'] as StudioMode[]).map((value) => (
               <button
                 key={value}
                 onClick={() => setMode(value)}
@@ -429,7 +429,9 @@ export function StudioShell({
                   : selectionMode === 'freehand'
                     ? 'Click and drag across a piece to draw a stroke, then release to pin a note to it'
                     : 'Click anywhere on a piece to pin a note there · hold Shift to note the whole part'
-                : 'Drag to orbit · scroll to zoom · click a piece to select it'}
+                : mode === 'floorplan'
+                  ? 'Click to place boundary points · double-click, or Finish in the panel, to close the polygon'
+                  : 'Drag to orbit · scroll to zoom · click a piece to select it'}
           </p>
         </main>
 

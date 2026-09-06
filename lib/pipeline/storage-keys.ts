@@ -15,4 +15,6 @@ export const storageKeys = {
   /** Decimated viewport copy of `mesh()` - see `lib/ai/mesh/simplify.ts`. */
   previewMesh: (projectId: string, versionId: string) => `${projectId}/meshes/${versionId}-preview.glb`,
   preview: (projectId: string, versionId: string) => `${projectId}/previews/${versionId}.png`,
+  /** Reference underlay image for a traced floor-plan footprint (issue #52). */
+  floorPlan: (projectId: string, ext: string) => `${projectId}/floorplans/${randomUUID()}.${ext}`,
 };
