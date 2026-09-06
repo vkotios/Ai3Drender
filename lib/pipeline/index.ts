@@ -11,10 +11,18 @@ import {
 import { getMeshProvider } from '@/lib/ai/mesh';
 import type { Store } from '@/lib/db';
 import { env } from '@/lib/env';
-import { formatAnnotationForPrompt } from '@/lib/scene/anchor';
+import { anchorWithinBounds, describeAnchor, formatAnnotationForPrompt, resolveComponent } from '@/lib/scene/anchor';
 
 import { backoffMs, isRetryable } from './errors';
-import type { AssetVersion, Job, RefinementRequest, SourceImage, SynthesizedView } from '@/lib/types';
+import type {
+  Annotation,
+  AssetVersion,
+  FurnitureAsset,
+  Job,
+  RefinementRequest,
+  SourceImage,
+  SynthesizedView,
+} from '@/lib/types';
 
 /**
  * Pipeline stages.
@@ -293,12 +301,19 @@ async function runRefine(ctx: StageContext): Promise<Record<string, unknown>> {
 
   // Close the loop: the notes this version answers are no longer open, and
   // point at the version that answered them.
+  const appliedIds = new Set<string>();
   for (const annotation of annotations) {
+    appliedIds.add(annotation.id);
     await store.updateAnnotation(annotation.id, {
       status: 'applied',
       resolvedByVersionId: version.id,
     });
   }
+
+  // Everything else still open on the version being revised would otherwise
+  // be left pinned to it forever, invisible against the version the studio
+  // now shows. Carry it forward instead.
+  const carriedForward = await carryForwardOpenAnnotations(store, asset, parent, version, appliedIds);
 
   if (request.rebuildMesh) {
     await store.updateAsset(asset.id, { status: 'reconstructing' });
@@ -317,7 +332,66 @@ async function runRefine(ctx: StageContext): Promise<Record<string, unknown>> {
     versionId: version.id,
     rebuildMesh: request.rebuildMesh,
     annotationsApplied: annotations.length,
+    annotationsCarriedForward: carriedForward.length,
+    annotationsFlagged: carriedForward.filter((a) => a.staleNote).length,
   };
+}
+
+/**
+ * Re-point every note still `open` on `parent` (and not itself part of this
+ * round) at the new `version`, refreshing everything the spec drives.
+ *
+ * The anchor point and normal are left untouched - they are stored in the
+ * asset's local space precisely so the same coordinate keeps meaning the
+ * same place on the piece across a rebuilt mesh (see lib/scene/anchor.ts).
+ * `partName`, `componentName` and the plain-language location are *not*
+ * carried over as-is, though: the part may have been renamed, split or
+ * removed by this very refinement, so each is re-resolved against the new
+ * spec rather than copied from the old note.
+ */
+async function carryForwardOpenAnnotations(
+  store: Store,
+  asset: FurnitureAsset,
+  parent: AssetVersion,
+  version: AssetVersion,
+  excludeIds: Set<string>,
+): Promise<Annotation[]> {
+  const stillOpen = (await store.listAnnotations([asset.id], ['open'])).filter(
+    (a) => a.assetVersionId === parent.id && !excludeIds.has(a.id),
+  );
+
+  const carried: Annotation[] = [];
+  for (const annotation of stillOpen) {
+    const { componentName, componentRole } = resolveComponent(annotation.partName, version.spec);
+    const anchorDescription = describeAnchor(annotation.point, version.spec.dimensions);
+
+    // Flag, don't hide: if the anchor can no longer be squared with the new
+    // spec, a reviewer should see that rather than act on a pin whose
+    // context quietly went stale underneath it.
+    let staleNote: string | null = null;
+    if (!anchorWithinBounds(annotation.point, version.spec.dimensions)) {
+      staleNote =
+        `Carried forward from v${annotation.originVersionNumber}: this anchor now falls outside ` +
+        `v${version.versionNumber}'s bounding box, so the part it was pinned to may have been ` +
+        'resized or removed. Re-check it against the current mesh before acting on it.';
+    } else if (annotation.componentName && !componentName) {
+      staleNote =
+        `Carried forward from v${annotation.originVersionNumber}: "${annotation.componentName}" no ` +
+        `longer resolves to a component in v${version.versionNumber} - it may have been renamed, ` +
+        'merged or removed. Re-check it against the current mesh before acting on it.';
+    }
+
+    const updated = await store.updateAnnotation(annotation.id, {
+      assetVersionId: version.id,
+      componentName,
+      componentRole,
+      anchorDescription,
+      staleNote,
+    });
+    carried.push(updated);
+  }
+
+  return carried;
 }
 
 /**
