@@ -1,12 +1,30 @@
+import { timingSafeEqual } from 'node:crypto';
+
 import { NextResponse } from 'next/server';
 
 import { getSession, requireProject, type Session } from '@/lib/db';
+import { env } from '@/lib/env';
 import type { Project } from '@/lib/types';
 
 export const json = <T>(data: T, status = 200) => NextResponse.json(data, { status });
 
 export const apiError = (message: string, status = 400) =>
   NextResponse.json({ error: message }, { status });
+
+/**
+ * Constant-time bearer check for `CRON_SECRET`, shared by every scheduled-
+ * trigger route (`POST /api/jobs/tick`, `POST /api/notifications/reminders/tick`)
+ * so a scheduler can call them without a signed-in session. Unset =>
+ * always false, same as before this existed for either route.
+ */
+export function isAuthorizedCron(request: Request): boolean {
+  if (!env.cronSecret) return false;
+  const header = request.headers.get('authorization') ?? '';
+  const expected = `Bearer ${env.cronSecret}`;
+  const a = Buffer.from(header);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 /**
  * Wrap a handler so it always runs with an authenticated session.

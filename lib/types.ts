@@ -382,8 +382,34 @@ export interface SceneDoc {
  *
  * Set only through the read-only share view (`/share/[token]`) - the owner
  * never sets this directly, it is what the client told them.
+ *
+ * Five states, modelled after Ziflow's per-reviewer verdict (see
+ * `docs/competitive-gap-analysis.md` §05, issue #41):
+ *   - `pending` - the default; no verdict submitted yet.
+ *   - `approved` - signed off outright.
+ *   - `approved_with_changes` - signed off, but see the note/notes - the
+ *     workshop can proceed without waiting on a second round.
+ *   - `changes_requested` - blocking; the stand needs rework before sign-off.
+ *   - `not_relevant` - this scene is not this client's to review (e.g. an
+ *     internal-only variant, or a stand superseded by another share link).
+ *
+ * This stays a single field on `Scene` rather than a per-annotation reviewer
+ * verdict: approval here is a sign-off on the whole staged stand, not on any
+ * one note, and every annotation already carries its own independent
+ * `AnnotationStatus` lifecycle (open/applied/dismissed). Layering a second,
+ * parallel verdict onto each annotation would answer a question nobody asked
+ * ("did the client fully review file X" - Ziflow's design point, for a
+ * multi-asset review queue) while this app reviews one exhibition stand at a
+ * time. Five values on this existing field expresses everything the issue
+ * asks for without that extra structure - see the PR description for the
+ * full reasoning.
  */
-export type ClientApproval = 'pending' | 'approved' | 'changes_requested';
+export type ClientApproval =
+  | 'pending'
+  | 'approved'
+  | 'approved_with_changes'
+  | 'changes_requested'
+  | 'not_relevant';
 
 export interface Scene {
   id: Uuid;
@@ -609,6 +635,8 @@ export interface SceneShareLink {
   expiresAt: IsoDate | null;
   revokedAt: IsoDate | null;
   lastAccessedAt: IsoDate | null;
+  /** Set when the reminder sweep last emailed the owner about this link. See `Store.markShareLinkReminded`. */
+  lastReminderSentAt: IsoDate | null;
   createdAt: IsoDate;
 }
 

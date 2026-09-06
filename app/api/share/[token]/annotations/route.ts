@@ -1,4 +1,5 @@
 import { apiError, json } from '@/lib/api';
+import { notifyReviewActivity } from '@/lib/notify/review-activity';
 import { describeAnchor, resolveComponent } from '@/lib/scene/anchor';
 import { referencedAssetVersionIds, resolveShareToken } from '@/lib/share/access';
 import type { Vec3 } from '@/lib/types';
@@ -23,7 +24,10 @@ export async function POST(request: Request, { params }: Params) {
   const { token } = await params;
   const resolution = await resolveShareToken(token);
   if (!resolution.ok) return apiError(resolution.message, resolution.status);
-  const { store, scene } = resolution.context;
+  const { store, scene, role } = resolution.context;
+  // The UI never offers a way to pin a note on a viewer link, but that is not
+  // the security boundary - a viewer-role token must be rejected here too.
+  if (role !== 'commenter') return apiError('This link is view-only', 403);
 
   const body = (await request.json()) as {
     clientName?: string;
@@ -47,25 +51,32 @@ export async function POST(request: Request, { params }: Params) {
 
   const { componentName, componentRole } = resolveComponent(body.partName ?? null, version.spec);
 
-  return json(
-    await store.createAnnotation({
-      assetId: version.assetId,
-      assetVersionId: version.id,
-      originVersionId: version.id,
-      originVersionNumber: version.versionNumber,
-      sceneId: scene.id,
-      point: body.point,
-      normal: isVec3(body.normal) ? body.normal : { x: 0, y: 1, z: 0 },
-      partName: body.partName ?? null,
-      componentName,
-      componentRole,
-      anchorDescription: describeAnchor(body.point, version.spec.dimensions),
-      body: body.body.trim(),
-      source: 'client',
-      clientName,
-      staleNote: null,
-      selectionKind: 'point',
-    }),
-    201,
-  );
+  const annotation = await store.createAnnotation({
+    assetId: version.assetId,
+    assetVersionId: version.id,
+    originVersionId: version.id,
+    originVersionNumber: version.versionNumber,
+    sceneId: scene.id,
+    point: body.point,
+    normal: isVec3(body.normal) ? body.normal : { x: 0, y: 1, z: 0 },
+    partName: body.partName ?? null,
+    componentName,
+    componentRole,
+    anchorDescription: describeAnchor(body.point, version.spec.dimensions),
+    body: body.body.trim(),
+    source: 'client',
+    clientName,
+    staleNote: null,
+    selectionKind: 'point',
+  });
+
+  // Best-effort - see notifyReviewActivity's doc comment. Never blocks or
+  // fails the note itself, and no-ops instantly with no Slack/email configured.
+  await notifyReviewActivity(scene, {
+    kind: 'annotation',
+    clientName,
+    body: annotation.body,
+  });
+
+  return json(annotation, 201);
 }

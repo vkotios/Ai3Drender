@@ -217,6 +217,15 @@ export interface Store {
   revokeShareLink(id: Uuid): Promise<SceneShareLink>;
   /** Best-effort activity marker, so an owner can see a link has been opened. */
   touchShareLink(id: Uuid): Promise<void>;
+  /**
+   * Every share link that is neither revoked nor expired, across every
+   * project - for the reminder sweep (`lib/notify/reminders.ts`), which runs
+   * with no signed-in owner to scope a per-project query by. Callers get
+   * this from `getWorkerStore()`, same as the job drainer.
+   */
+  listActiveShareLinks(): Promise<SceneShareLink[]>;
+  /** Record that the reminder sweep just emailed the owner about this link. */
+  markShareLinkReminded(id: Uuid): Promise<void>;
 
   /** Every retained save of a scene's `doc`, newest first. */
   listSceneVersions(sceneId: Uuid): Promise<SceneVersion[]>;
