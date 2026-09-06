@@ -1,6 +1,8 @@
 import { apiError, json, withScene } from '@/lib/api';
 import { env } from '@/lib/env';
-import type { IsoDate } from '@/lib/types';
+import type { IsoDate, ShareRole } from '@/lib/types';
+
+const ROLES: ShareRole[] = ['viewer', 'commenter'];
 
 type Params = { params: Promise<{ sceneId: string }> };
 
@@ -23,7 +25,12 @@ export async function POST(request: Request, { params }: Params) {
     const body = (await request.json().catch(() => ({}))) as {
       label?: string | null;
       expiresInDays?: number | null;
+      role?: ShareRole;
     };
+
+    if (body.role != null && !ROLES.includes(body.role)) {
+      return apiError(`role must be one of ${ROLES.join(', ')}`);
+    }
 
     let expiresAt: IsoDate | null = null;
     if (body.expiresInDays != null) {
@@ -36,6 +43,7 @@ export async function POST(request: Request, { params }: Params) {
     const { link, token } = await store.createShareLink({
       sceneId: scene.id,
       createdBy: viewer.id,
+      role: body.role ?? 'commenter',
       label: body.label?.trim() || null,
       expiresAt,
     });

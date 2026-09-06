@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 
 import { Badge, Button, Empty, Field, Panel, TextInput } from '@/components/ui';
 import { useStudio, type LoadedVersion } from '@/lib/studio/store';
-import type { Annotation, ClientApproval, Scene } from '@/lib/types';
+import type { Annotation, ClientApproval, Scene, ShareRole } from '@/lib/types';
 
 // Same client-only constraint as the authenticated studio - WebGL and drei's
 // HDRI loading do not exist on the server.
@@ -32,27 +32,74 @@ const ArViewer = dynamic(() => import('./ArViewer').then((m) => m.ArViewer), {
 
 const CLIENT_NAME_KEY = 'ai3drender:share-client-name';
 
+/** Every verdict the client can actively submit - `pending` is a state, not a choice. */
+const REVIEW_CHOICES: { value: Exclude<ClientApproval, 'pending'>; label: string; hint: string }[] = [
+  { value: 'approved', label: 'Approved', hint: 'Nothing to change - ready to build.' },
+  {
+    value: 'approved_with_changes',
+    label: 'Approved, with changes',
+    hint: 'Sign off now; the notes below cover what still needs adjusting.',
+  },
+  {
+    value: 'changes_requested',
+    label: 'Changes requested',
+    hint: 'Please address the notes before this goes ahead.',
+  },
+  { value: 'not_relevant', label: 'Not relevant to me', hint: "This stand isn't mine to review." },
+];
+
+function approvalLabel(status: ClientApproval): string {
+  switch (status) {
+    case 'approved':
+      return 'Approved';
+    case 'approved_with_changes':
+      return 'Approved, with changes';
+    case 'changes_requested':
+      return 'Changes requested';
+    case 'not_relevant':
+      return 'Marked not relevant';
+    default:
+      return 'Pending';
+  }
+}
+
 /**
  * The client's read-only review view.
  *
  * This is a deliberately smaller shell than StudioShell, not a feature-flagged
- * version of it: there is no gizmo toolbar, no Outliner, no Save, no Export,
- * and studio mode is pinned to 'comment' for the lifetime of the page. Orbit
- * and inspect, plus the same anchored-note machinery the internal review loop
- * uses, is the entire surface area - nothing here can stage a piece or read
- * back an edited transform, because nothing here offers a way to make one.
+ * version of it: there is no gizmo toolbar, no Outliner, no Save, no Export.
+ * `role` decides the rest of the surface area:
+ *
+ * - 'commenter' pins studio mode to 'comment' for the lifetime of the page -
+ *   orbit and inspect, plus the same anchored-note machinery the internal
+ *   review loop uses, and the sign-off controls.
+ * - 'viewer' pins mode to 'view' instead, and this component renders none of
+ *   the note-pinning or approve/request-changes UI at all - not hidden behind
+ *   a disabled state, just never in the tree. Orbit/inspect is the entire
+ *   surface area for that tier.
+ *
+ * Either way, nothing here can stage a piece or read back an edited
+ * transform, because nothing here offers a way to make one - and for a
+ * 'viewer' link, the write API routes themselves (app/api/share/[token]/
+ * annotations and .../review) reject the request server-side regardless of
+ * what this component renders; the UI split below is not the security
+ * boundary.
  */
 export function ShareStudioShell({
   token,
   scene,
   versions,
   annotations,
+  role,
 }: {
   token: string;
   scene: Scene;
   versions: LoadedVersion[];
   annotations: Annotation[];
+  role: ShareRole;
 }) {
+  const canComment = role === 'commenter';
+
   const load = useStudio((s) => s.load);
   const setMode = useStudio((s) => s.setMode);
   const doc = useStudio((s) => s.doc);
@@ -73,13 +120,19 @@ export function ShareStudioShell({
   });
   const [reviewNote, setReviewNote] = useState('');
   const [arVersionId, setArVersionId] = useState<string | null>(null);
+  const [reviewChoice, setReviewChoice] = useState<Exclude<ClientApproval, 'pending'>>(
+    scene.clientApproval === 'pending' ? 'approved' : scene.clientApproval,
+  );
 
   useEffect(() => {
     load(scene, versions, annotations);
     // Pinned for the whole session: this view never offers a way back to
     // 'layout' mode, which is what keeps the gizmo and staging tools out.
-    setMode('comment');
-  }, [load, setMode, scene, versions, annotations]);
+    // A 'viewer' link never enters 'comment' mode at all, so AssetNode's
+    // click handler falls through to a plain (harmless, unrendered) select
+    // instead of pinning - see lib/studio/store.ts's StudioMode doc.
+    setMode(canComment ? 'comment' : 'view');
+  }, [load, setMode, scene, versions, annotations, canComment]);
 
   useEffect(() => {
     try {
@@ -171,10 +224,10 @@ export function ShareStudioShell({
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="flex shrink-0 items-center gap-3 border-b border-shell-800 bg-shell-900 px-4 py-2.5">
-        <Badge tone="neutral">Client review</Badge>
+        <Badge tone="neutral">{canComment ? 'Client review' : 'View only'}</Badge>
         <h1 className="truncate text-sm font-medium text-shell-100">{scene.name}</h1>
-        <ApprovalBadge status={approval} />
-        {error && (
+        {canComment && <ApprovalBadge status={approval} />}
+        {canComment && error && (
           <span className="ml-auto truncate text-xs text-red-400" title={error}>
             {error}
           </span>
@@ -195,10 +248,11 @@ export function ShareStudioShell({
             />
           )}
           <p className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-shell-950/80 px-3 py-1 text-[11px] text-shell-400">
-            Drag to orbit · scroll to zoom · click a piece to leave a note
+            {canComment ? 'Drag to orbit · scroll to zoom · click a piece to leave a note' : 'Drag to orbit · scroll to zoom'}
           </p>
         </main>
 
+        {canComment && (
         <aside className="w-80 shrink-0 space-y-3 overflow-y-auto border-l border-shell-800 bg-shell-950 p-3">
           <Panel title="Your name">
             <TextInput
@@ -319,38 +373,55 @@ export function ShareStudioShell({
           <Panel title="Sign off">
             {approval !== 'pending' && (
               <p className="mb-2 text-[11px] leading-relaxed text-shell-400">
-                {approval === 'approved' ? 'Approved' : 'Changes requested'} by {approvalMeta.name}
+                {approvalLabel(approval)} by {approvalMeta.name}
                 {approvalMeta.at && ` on ${new Date(approvalMeta.at).toLocaleString()}`}
                 {approvalMeta.note && <> — &quot;{approvalMeta.note}&quot;</>}
               </p>
             )}
-            <Field label="Notes (optional)">
-              <TextInput
-                value={reviewNote}
-                onChange={(e) => setReviewNote(e.target.value)}
-                placeholder="Looks great, just fix the notes above"
-              />
-            </Field>
+            <fieldset className="space-y-1.5">
+              <legend className="sr-only">Review verdict</legend>
+              {REVIEW_CHOICES.map((choice) => (
+                <label
+                  key={choice.value}
+                  className="flex cursor-pointer items-start gap-2 rounded-md border border-shell-800 p-2 has-[:checked]:border-shell-500 has-[:checked]:bg-shell-900"
+                >
+                  <input
+                    type="radio"
+                    name="review-verdict"
+                    value={choice.value}
+                    checked={reviewChoice === choice.value}
+                    onChange={() => setReviewChoice(choice.value)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="block text-xs text-shell-100">{choice.label}</span>
+                    <span className="block text-[11px] text-shell-400">{choice.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+            <div className="mt-2">
+              <Field label="Notes (optional)">
+                <TextInput
+                  value={reviewNote}
+                  onChange={(e) => setReviewNote(e.target.value)}
+                  placeholder="Looks great, just fix the notes above"
+                />
+              </Field>
+            </div>
             <div className="mt-2 flex gap-1.5">
               <Button
                 size="sm"
                 variant="primary"
                 disabled={busy || !clientName.trim()}
-                onClick={() => submitReview('approved')}
+                onClick={() => submitReview(reviewChoice)}
               >
-                Approve
-              </Button>
-              <Button
-                size="sm"
-                variant="danger"
-                disabled={busy || !clientName.trim()}
-                onClick={() => submitReview('changes_requested')}
-              >
-                Request changes
+                Submit review
               </Button>
             </div>
           </Panel>
         </aside>
+        )}
       </div>
 
       {arVersion && (
@@ -376,7 +447,16 @@ export function ShareStudioShell({
 }
 
 function ApprovalBadge({ status }: { status: ClientApproval }) {
-  if (status === 'approved') return <Badge tone="good">Approved</Badge>;
-  if (status === 'changes_requested') return <Badge tone="bad">Changes requested</Badge>;
-  return <Badge tone="neutral">Awaiting review</Badge>;
+  switch (status) {
+    case 'approved':
+      return <Badge tone="good">Approved</Badge>;
+    case 'approved_with_changes':
+      return <Badge tone="warn">Approved, with changes</Badge>;
+    case 'changes_requested':
+      return <Badge tone="bad">Changes requested</Badge>;
+    case 'not_relevant':
+      return <Badge tone="neutral">Not relevant</Badge>;
+    default:
+      return <Badge tone="neutral">Awaiting review</Badge>;
+  }
 }

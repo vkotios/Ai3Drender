@@ -1,10 +1,20 @@
 import { GoogleGenAI } from '@google/genai';
 
 import { env, hasGemini } from '@/lib/env';
-import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, SceneDirection } from '@/lib/types';
+import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, QaResult, SceneDirection } from '@/lib/types';
 
-import { offlineFurnitureSpec, offlineSceneDirection } from './offline';
-import { FURNITURE_SPEC_SCHEMA, SCENE_DIRECTION_SCHEMA } from './schemas';
+import {
+  offlineFurnitureSpec,
+  offlineMaterialCorrection,
+  offlineQaResult,
+  offlineSceneDirection,
+} from './offline';
+import {
+  FURNITURE_SPEC_SCHEMA,
+  MATERIAL_CORRECTION_SCHEMA,
+  QA_RESULT_SCHEMA,
+  SCENE_DIRECTION_SCHEMA,
+} from './schemas';
 
 export interface ImageInput {
   bytes: Uint8Array;
@@ -307,7 +317,84 @@ ${spec.reconstructionNotes}
 }
 
 /* -------------------------------------------------------------------------- */
-/* 3. Brief -> exhibition art direction                                       */
+/* 3. Perceptual QA: does the mesh actually look like the photos?             */
+/* -------------------------------------------------------------------------- */
+
+const QA_PROMPT = `
+You are a quality inspector at a furniture manufacturer, checking a freshly reconstructed
+3D model against the photographs of the real piece it was built from.
+
+You are shown two sets of images:
+1. The ORIGINAL PHOTOGRAPHS of the physical piece.
+2. RENDERED VIEWS of the reconstructed 3D mesh, from a few stock camera angles.
+
+Compare them and judge how faithfully the mesh reproduces the piece in the photos.
+
+Rules:
+- Score fidelity from 0 (no resemblance) to 100 (matches the photos closely) considering
+  silhouette, proportions, materials/colour and any visible construction detail.
+- Ignore rendering differences that are not the mesh's fault: the renders use flat studio
+  shading with no environment, so lighting, background and photographic finish never count
+  against the score.
+- List only concrete, specific mismatches (e.g. "missing left armrest", "legs read much
+  thicker than in the photos", "seat cushion is grey instead of the photographed tan"). Do
+  not restate the score as an issue, and leave the list empty when the mesh is a faithful
+  match.
+`.trim();
+
+/**
+ * Ask Gemini vision whether a reconstructed mesh actually looks like the
+ * photos it was built from - a perceptual check on top of gltf-transform's
+ * purely structural round-trip (valid glTF, sane triangle counts).
+ *
+ * Always a soft signal: the caller stores whatever comes back on the
+ * AssetVersion and the UI surfaces it as a warning, never as a blocker on
+ * accepting or using the version (a reconstruction vendor outage or a model
+ * refusal here must not stop a piece from shipping).
+ */
+export async function evaluateReconstruction(
+  sourcePhotos: ImageInput[],
+  meshViews: { angle: string; image: GeneratedImage }[],
+  spec: Pick<FurnitureSpec, 'displayName' | 'category' | 'summary'>,
+): Promise<QaResult> {
+  const usablePhotos = sourcePhotos.filter((i) => i.role !== 'mood');
+  if (!hasGemini || usablePhotos.length === 0 || meshViews.length === 0) {
+    return offlineQaResult();
+  }
+
+  const response = await ai().models.generateContent({
+    model: env.geminiTextModel,
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: QA_PROMPT },
+          { text: `The piece is a ${spec.category}: ${spec.displayName}. ${spec.summary}` },
+          { text: 'Original photographs:' },
+          ...usablePhotos.map(imagePart),
+          { text: 'Rendered views of the reconstructed mesh:' },
+          ...meshViews.map((v) => ({ inlineData: { mimeType: v.image.mimeType, data: toBase64(v.image.bytes) } })),
+        ],
+      },
+    ],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: QA_RESULT_SCHEMA as never,
+      temperature: 0.1,
+    },
+  });
+
+  const parsed = parseJson<{ score: number; issues: string[] }>(response.text ?? '', 'evaluateReconstruction');
+  const score = Number.isFinite(parsed.score) ? Math.min(100, Math.max(0, parsed.score)) : 0;
+  return {
+    score,
+    issues: Array.isArray(parsed.issues) ? parsed.issues.filter(Boolean) : [],
+    source: 'gemini',
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 4. Brief -> exhibition art direction                                       */
 /* -------------------------------------------------------------------------- */
 
 export async function directScene(
@@ -359,7 +446,7 @@ Keep the prop list to what genuinely helps the pieces read.
 }
 
 /* -------------------------------------------------------------------------- */
-/* 4. Natural-language refinement of an existing spec                         */
+/* 5. Natural-language refinement of an existing spec                         */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -426,7 +513,92 @@ ${JSON.stringify(spec, null, 2)}
 }
 
 /* -------------------------------------------------------------------------- */
-/* 5. Fast photoreal concept pass over a viewport capture                     */
+/* 6. Spot-fix one material's PBR values from a free-text instruction         */
+/* -------------------------------------------------------------------------- */
+
+export type MaterialCorrection = Pick<
+  MaterialSpec,
+  'baseColorHex' | 'roughness' | 'metalness' | 'sheen' | 'clearcoat' | 'finish' | 'notes'
+>;
+
+/**
+ * Apply a plain-language correction ("make this darker walnut") to ONE
+ * material's PBR values, without touching the spec or mesh around it.
+ *
+ * This is the lighter counterpart to `refineSpec`: same "describe the change,
+ * get structured values back" shape, but scoped to a single material entry
+ * rather than the whole furniture spec, so a wrong colour or finish doesn't
+ * force a full note-and-revise round that also touches the mesh. See the
+ * material rebind route (`PATCH .../materials/:materialId`), which calls this
+ * for a free-text `instruction` the same way it already calls the material
+ * library for a `libraryEntryId`.
+ */
+export async function correctMaterial(
+  material: MaterialSpec,
+  instruction: string,
+): Promise<MaterialCorrection> {
+  if (!hasGemini) return offlineMaterialCorrection(material, instruction);
+
+  const response = await ai().models.generateContent({
+    model: env.geminiTextModel,
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `
+Adjust ONLY the physically-based rendering values below for one furniture material, so
+it matches the requested correction. This is a targeted colour/finish fix to a single
+material, not a redesign - do not change kind, and change roughness/metalness/sheen/
+clearcoat only as far as the requested finish actually implies.
+
+Current material:
+${JSON.stringify(
+  {
+    name: material.name,
+    kind: material.kind,
+    baseColorHex: material.baseColorHex,
+    roughness: material.roughness,
+    metalness: material.metalness,
+    sheen: material.sheen,
+    clearcoat: material.clearcoat,
+    finish: material.finish,
+  },
+  null,
+  2,
+)}
+
+Requested correction:
+${instruction}
+`.trim(),
+          },
+        ],
+      },
+    ],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: MATERIAL_CORRECTION_SCHEMA as never,
+      temperature: 0.3,
+    },
+  });
+
+  const parsed = parseJson<Omit<MaterialCorrection, 'notes'>>(response.text ?? '', 'correctMaterial');
+  const clamp = (n: number, lo: number, hi: number) =>
+    Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : lo;
+
+  return {
+    baseColorHex: /^#[0-9a-f]{6}$/i.test(parsed.baseColorHex) ? parsed.baseColorHex : material.baseColorHex,
+    roughness: clamp(parsed.roughness, 0, 1),
+    metalness: clamp(parsed.metalness, 0, 1),
+    sheen: clamp(parsed.sheen ?? material.sheen, 0, 1),
+    clearcoat: clamp(parsed.clearcoat ?? material.clearcoat, 0, 1),
+    finish: parsed.finish || material.finish,
+    notes: `Spot-fixed via Gemini per instruction: "${instruction.trim()}".`,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 7. Fast photoreal concept pass over a viewport capture                     */
 /* -------------------------------------------------------------------------- */
 
 /**

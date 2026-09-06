@@ -28,9 +28,13 @@ export interface LoadedVersion {
  *
  * 'layout' is the staging tool - click selects, gizmos move. 'comment' turns
  * a click into a pinned note instead, so reviewing never risks nudging an
- * approved layout.
+ * approved layout. 'view' is orbit/inspect only - a plain click just selects
+ * locally (same as a non-'comment' click always has), but nothing renders a
+ * gizmo or a pinning affordance for it: used for a 'viewer'-role share link,
+ * where the surrounding UI offers no note-pinning or sign-off controls either
+ * (see ShareStudioShell).
  */
-export type StudioMode = 'layout' | 'comment';
+export type StudioMode = 'layout' | 'comment' | 'view';
 
 /** A click in comment mode, held until the note is written or discarded. */
 export interface PendingPin {

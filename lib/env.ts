@@ -44,7 +44,22 @@ export const env = {
   // Lets a scheduled trigger (Vercel Cron, or any external cron service) call
   // POST /api/jobs/tick without a signed-in session. Unset => that route only
   // accepts the studio's own authenticated poll, same as before this existed.
+  // Also gates POST /api/notifications/reminders/tick, for the same reason.
   cronSecret: clean(process.env.CRON_SECRET),
+
+  /** Slack Incoming Webhook URL. Unset => review activity is never posted. */
+  slackWebhookUrl: clean(process.env.SLACK_WEBHOOK_URL),
+
+  /**
+   * Resend (https://resend.com) API key for owner/reminder emails. Unset =>
+   * no email is ever sent - review activity is still visible in the studio
+   * and (if configured) posted to Slack, it just isn't emailed.
+   */
+  resendApiKey: clean(process.env.RESEND_API_KEY),
+  /** `from` address on outgoing notification emails. Needs a domain verified with Resend. */
+  notificationsFromEmail: clean(process.env.NOTIFICATIONS_FROM_EMAIL) ?? 'notifications@ai3drender.dev',
+  /** Days of no share-link activity before a reminder email is sent. */
+  reminderThresholdDays: Number(clean(process.env.REMINDER_THRESHOLD_DAYS)) || 3,
 } as const;
 
 /** True when Supabase is configured; otherwise the on-disk LocalStore is used. */
@@ -52,6 +67,12 @@ export const hasSupabase = Boolean(env.supabaseUrl && env.supabaseAnonKey);
 
 /** True when Gemini is configured; otherwise the offline analyzer is used. */
 export const hasGemini = Boolean(env.geminiApiKey);
+
+/** True when a Slack Incoming Webhook is configured. */
+export const hasSlack = Boolean(env.slackWebhookUrl);
+
+/** True when Resend is configured; otherwise every email send is a no-op. */
+export const hasEmail = Boolean(env.resendApiKey);
 
 /**
  * The single user the app runs as when Supabase (and therefore auth) is absent.
