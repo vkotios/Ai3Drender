@@ -87,6 +87,7 @@ const toVersion = (r: Row): AssetVersion => ({
   views: r.views ?? [],
   meshPath: r.mesh_path,
   meshExtentMm: r.mesh_extent_mm === null ? null : Number(r.mesh_extent_mm),
+  previewPath: r.preview_path ?? null,
   provider: r.provider,
   providerJobId: r.provider_job_id,
   refinement: r.refinement,
@@ -315,6 +316,7 @@ export class SupabaseStore implements Store {
         views: input.views,
         mesh_path: input.meshPath,
         mesh_extent_mm: input.meshExtentMm,
+        preview_path: input.previewPath,
         provider: input.provider,
         provider_job_id: input.providerJobId,
         refinement: input.refinement,
@@ -347,6 +349,7 @@ export class SupabaseStore implements Store {
     if (patch.views !== undefined) update.views = patch.views;
     if (patch.meshPath !== undefined) update.mesh_path = patch.meshPath;
     if (patch.meshExtentMm !== undefined) update.mesh_extent_mm = patch.meshExtentMm;
+    if (patch.previewPath !== undefined) update.preview_path = patch.previewPath;
     if (patch.provider !== undefined) update.provider = patch.provider;
     if (patch.providerJobId !== undefined) update.provider_job_id = patch.providerJobId;
     if (patch.refinement !== undefined) update.refinement = patch.refinement;

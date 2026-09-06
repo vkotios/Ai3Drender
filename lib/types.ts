@@ -191,6 +191,8 @@ export interface AssetVersion {
   meshPath: string | null;
   /** Longest-axis size of the raw mesh, used to scale it to real-world mm. */
   meshExtentMm: number | null;
+  /** Storage key of a small captured PNG of the mesh, for list thumbnails. Null until one is captured. */
+  previewPath: string | null;
   provider: string;
   providerJobId: string | null;
   refinement: RefinementRequest | null;

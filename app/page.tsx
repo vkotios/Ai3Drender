@@ -1,8 +1,7 @@
-import Link from 'next/link';
-
 import { AuthStatus } from '@/components/AuthStatus';
-import { Empty, Panel } from '@/components/ui';
+import { Panel } from '@/components/ui';
 import { NewProjectForm } from '@/components/NewProjectForm';
+import { ProjectsList } from '@/components/ProjectsList';
 import { requireSession } from '@/lib/auth';
 import { hasGemini, hasSupabase, env } from '@/lib/env';
 
@@ -32,33 +31,7 @@ export default async function HomePage() {
           <h2 className="mb-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-shell-400">
             Projects
           </h2>
-          {projects.length === 0 ? (
-            <Empty title="No projects yet">
-              A project holds one exhibition: the photographs you upload, the pieces reconstructed
-              from them, and the stands you stage.
-            </Empty>
-          ) : (
-            <ul className="space-y-2">
-              {projects.map((project) => (
-                <li key={project.id}>
-                  <Link
-                    href={`/projects/${project.id}`}
-                    className="block rounded-lg border border-shell-800 bg-shell-900 px-4 py-3 transition hover:border-shell-600"
-                  >
-                    <div className="flex items-baseline justify-between gap-3">
-                      <span className="font-medium text-shell-100">{project.name}</span>
-                      <span className="text-[11px] text-shell-400">
-                        {new Date(project.updatedAt).toLocaleDateString()}
-                      </span>
-                    </div>
-                    {project.client && (
-                      <span className="mt-0.5 block text-xs text-shell-400">{project.client}</span>
-                    )}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
+          <ProjectsList initialProjects={projects} />
         </section>
 
         <Panel title="New project">

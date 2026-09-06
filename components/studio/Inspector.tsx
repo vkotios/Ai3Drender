@@ -1,9 +1,11 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+
 import { Badge, Field, Panel, Slider, TextInput } from '@/components/ui';
 import { BOOTH_PRESETS, PROP_DEFINITIONS, getPreset } from '@/lib/scene/presets';
 import { useStudio } from '@/lib/studio/store';
-import type { SceneNode } from '@/lib/types';
+import type { AssetVersion, SceneNode } from '@/lib/types';
 
 const DEG = 180 / Math.PI;
 
@@ -105,6 +107,10 @@ function NodeInspector({ node }: { node: SceneNode }) {
       </Panel>
 
       {loaded && <MaterialInspector node={node} />}
+
+      {node.kind === 'asset' && node.assetVersionId && (
+        <VersionComparePanel assetId={loaded?.version.assetId} nodeId={node.id} currentVersionId={node.assetVersionId} />
+      )}
 
       {node.kind === 'prop' && node.propKind && (
         <Panel title="Prop">
@@ -215,6 +221,149 @@ function MaterialInspector({ node }: { node: SceneNode }) {
         })}
       </div>
     </Panel>
+  );
+}
+
+interface VersionOption {
+  version: AssetVersion;
+  meshUrl: string | null;
+}
+
+/**
+ * A/B toggle between two versions of the same piece, on the exact spot it is
+ * staged.
+ *
+ * Swapping only ever changes `node.assetVersionId` - the transform, camera and
+ * everything else about the stand stays put, so the two frames are directly
+ * comparable. Nothing here is saved until the ordinary Save button is used,
+ * same as a material override.
+ */
+function VersionComparePanel({
+  assetId,
+  nodeId,
+  currentVersionId,
+}: {
+  assetId: string | undefined;
+  nodeId: string;
+  currentVersionId: string;
+}) {
+  const patchNode = useStudio((s) => s.patchNode);
+  const registerVersion = useStudio((s) => s.registerVersion);
+
+  const [options, setOptions] = useState<VersionOption[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [aId, setAId] = useState<string | null>(null);
+  const [bId, setBId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!assetId) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch(`/api/assets/${assetId}`)
+      .then((res) => {
+        if (!res.ok) throw new Error('Could not load versions');
+        return res.json() as Promise<{ versions: VersionOption[] }>;
+      })
+      .then(({ versions }) => {
+        if (cancelled) return;
+        // Only versions with a mesh can actually be shown in the viewport.
+        const buildable = versions.filter((v) => v.meshUrl);
+        setOptions(buildable);
+        // Preload every one so toggling between them never waits on a fetch.
+        for (const option of buildable) registerVersion(option);
+
+        const other = buildable.find((v) => v.version.id !== currentVersionId);
+        setAId(currentVersionId);
+        setBId(other?.version.id ?? currentVersionId);
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : 'Could not load versions');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Re-runs only when the underlying asset changes, not on every A/B pick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assetId]);
+
+  if (!assetId) return null;
+
+  const showing = currentVersionId === bId ? 'B' : currentVersionId === aId ? 'A' : null;
+
+  return (
+    <Panel title="Compare versions">
+      {loading && <p className="text-xs text-shell-400">Loading versions…</p>}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {options && options.length < 2 && (
+        <p className="text-xs text-shell-400">Only one built version of this piece exists yet.</p>
+      )}
+      {options && options.length >= 2 && aId && bId && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <VersionPicker label="A" value={aId} options={options} onChange={setAId} />
+            <VersionPicker label="B" value={bId} options={options} onChange={setBId} />
+          </div>
+          <div className="flex overflow-hidden rounded-md border border-shell-700">
+            <button
+              onClick={() => patchNode(nodeId, { assetVersionId: aId })}
+              className={`flex-1 px-2.5 py-1.5 text-xs font-medium transition ${
+                showing === 'A' ? 'bg-shell-700 text-shell-100' : 'text-shell-400 hover:text-shell-100'
+              }`}
+            >
+              Show A
+            </button>
+            <button
+              onClick={() => patchNode(nodeId, { assetVersionId: bId })}
+              disabled={aId === bId}
+              className={`flex-1 px-2.5 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                showing === 'B' ? 'bg-shell-700 text-shell-100' : 'text-shell-400 hover:text-shell-100'
+              }`}
+            >
+              Show B
+            </button>
+          </div>
+          <p className="text-[11px] leading-snug text-shell-400">
+            Same spot, same camera - only the mesh and materials swap. Save to keep whichever one
+            you land on, or reload the stand to discard the swap.
+          </p>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function VersionPicker({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: VersionOption[];
+  onChange: (id: string) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[11px] font-medium text-shell-400">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-md border border-shell-700 bg-shell-850 px-2 py-1 text-xs text-shell-100 focus:border-shell-400 focus:outline-none"
+      >
+        {options.map((option) => (
+          <option key={option.version.id} value={option.version.id}>
+            v{option.version.versionNumber}
+            {option.version.acceptedAt ? ' · accepted' : ''}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
