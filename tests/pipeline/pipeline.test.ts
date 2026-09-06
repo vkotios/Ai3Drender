@@ -134,6 +134,9 @@ describe('pipeline: refine', () => {
       partName: 'Legs 1',
       componentName: 'Legs',
       componentRole: 'leg',
+      originVersionId: parent!.id,
+      originVersionNumber: parent!.versionNumber,
+      staleNote: null,
       anchorDescription: 'front-left, 300 mm above the floor',
       body: 'Make these legs slimmer.',
     });
@@ -199,6 +202,9 @@ describe('pipeline: refine', () => {
       partName: null,
       componentName: null,
       componentRole: null,
+      originVersionId: parent!.id,
+      originVersionNumber: parent!.versionNumber,
+      staleNote: null,
       anchorDescription: 'centre, 0 mm above the floor',
       body: 'Unrelated note.',
     });
