@@ -146,13 +146,15 @@ function SceneContents({
         {doc.nodes.map((node) => {
           if (node.kind === 'asset' && node.assetVersionId) {
             const loaded = versions[node.assetVersionId];
-            if (!loaded?.meshUrl) return null;
+            if (!loaded?.meshUrl || !loaded.version.meshPath) return null;
             return (
               <AssetNode
                 key={node.id}
                 node={node}
                 version={loaded.version}
+                meshPath={loaded.version.meshPath}
                 meshUrl={loaded.meshUrl}
+                meshUrlExpiresAt={loaded.meshUrlExpiresAt}
                 selected={!presenting && node.id === selectedId}
                 mode={mode}
                 annotations={

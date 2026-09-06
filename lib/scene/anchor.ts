@@ -9,7 +9,7 @@ import type { Dimensions3, FurnitureSpec, Vec3 } from '@/lib/types';
  */
 
 /** Strip the "3" from "Legs 3" - repeated parts are numbered on export. */
-function baseName(partName: string): string {
+export function baseName(partName: string): string {
   return partName.replace(/[\s_]\d+$/, '').trim();
 }
 
@@ -70,6 +70,43 @@ export function describeAnchor(point: Vec3, dimensions: Dimensions3): string {
 
   const heightMm = Math.round(point.y * 1000);
   return `${where}, ${heightMm} mm above the floor`;
+}
+
+/**
+ * Describe a whole-part selection in plain language, for a note that covers
+ * every instance of a named part rather than one clicked point.
+ *
+ * This is what keeps a "select the whole part" note in the same shape as a
+ * pinned point once it reaches the model: still a part name plus a short
+ * plain-language location, never a raw point or vertex set.
+ */
+export function describeWholePart(instanceCount: number): string {
+  return instanceCount > 1 ? `as a whole, all ${instanceCount} instances` : 'as a whole';
+}
+
+/**
+ * Whether an anchor point still falls within the piece's bounding box.
+ *
+ * Used when carrying a note forward to a version whose dimensions changed:
+ * if the piece shrank enough that the anchor now sits outside it, the part
+ * it was pinned to was likely resized away or removed entirely, and the pin
+ * is no longer trustworthy as-is. A small margin absorbs the fact that
+ * `dimensions` is itself an estimate, not an exact mesh bound.
+ */
+export function anchorWithinBounds(point: Vec3, dimensions: Dimensions3): boolean {
+  const halfWidthM = dimensions.widthMm / 2000;
+  const halfDepthM = dimensions.depthMm / 2000;
+  const heightM = dimensions.heightMm / 1000;
+  const marginM = 0.02;
+
+  return (
+    point.x >= -halfWidthM - marginM &&
+    point.x <= halfWidthM + marginM &&
+    point.z >= -halfDepthM - marginM &&
+    point.z <= halfDepthM + marginM &&
+    point.y >= -marginM &&
+    point.y <= heightM + marginM
+  );
 }
 
 /** One line per note, as handed to the model. */

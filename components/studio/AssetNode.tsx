@@ -5,17 +5,55 @@ import { useMemo, useRef } from 'react';
 import type { ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 
+import { baseName } from '@/lib/scene/anchor';
+import { resolveMaterialOverrideKey } from '@/lib/scene/materialOverrides';
 import type { Annotation, AssetVersion, SceneNode } from '@/lib/types';
-import type { PendingPin, StudioMode } from '@/lib/studio/store';
+import { useStudio, type PendingPin, type StudioMode } from '@/lib/studio/store';
+
+import { MeshUrlBoundary } from './MeshUrlBoundary';
+
+interface AssetNodeProps {
+  node: SceneNode;
+  version: AssetVersion;
+  /** Storage key the mesh URL was resolved from - what a refresh re-resolves. */
+  meshPath: string;
+  meshUrl: string;
+  /** Null in local-disk mode: that URL is stable and never needs refreshing. */
+  meshUrlExpiresAt: string | null;
+  selected: boolean;
+  mode: StudioMode;
+  annotations: Annotation[];
+  pendingPin: PendingPin | null;
+  selectedAnnotationId: string | null;
+  onSelect: () => void;
+  onPin: (pin: Omit<PendingPin, 'nodeId' | 'assetId' | 'assetVersionId'>) => void;
+  onSelectAnnotation: (id: string) => void;
+}
 
 /**
  * One reconstructed furniture piece in the scene.
+ *
+ * Wraps the actual mesh in `MeshUrlBoundary` so a signed mesh URL resolved
+ * when the page rendered gets refreshed before it goes stale (and retried
+ * once if it is ever used past that anyway), rather than staying good for
+ * only as long as its one-hour signature - see that component for why.
+ */
+export function AssetNode({ meshPath, meshUrl, meshUrlExpiresAt, ...rest }: AssetNodeProps) {
+  return (
+    <MeshUrlBoundary meshKey={meshPath} initialUrl={meshUrl} initialExpiresAt={meshUrlExpiresAt}>
+      {(url) => <AssetMesh {...rest} meshUrl={url} />}
+    </MeshUrlBoundary>
+  );
+}
+
+/**
+ * The actual mesh, scaled and grounded.
  *
  * Two things have to happen to a vendor mesh before it can share a scene with
  * anything else: it must be scaled to real-world size, and it must be grounded
  * so its lowest point sits on y=0 rather than wherever the vendor's origin fell.
  */
-export function AssetNode({
+function AssetMesh({
   node,
   version,
   meshUrl,
@@ -27,21 +65,10 @@ export function AssetNode({
   onSelect,
   onPin,
   onSelectAnnotation,
-}: {
-  node: SceneNode;
-  version: AssetVersion;
-  meshUrl: string;
-  selected: boolean;
-  mode: StudioMode;
-  annotations: Annotation[];
-  pendingPin: PendingPin | null;
-  selectedAnnotationId: string | null;
-  onSelect: () => void;
-  onPin: (pin: Omit<PendingPin, 'nodeId' | 'assetId' | 'assetVersionId'>) => void;
-  onSelectAnnotation: (id: string) => void;
-}) {
+}: Omit<AssetNodeProps, 'meshPath' | 'meshUrlExpiresAt'>) {
   const { scene } = useGLTF(meshUrl);
   const groupRef = useRef<THREE.Group>(null);
+  const selectionMode = useStudio((s) => s.selectionMode);
 
   const prepared = useMemo(() => {
     // Clone so several nodes can reference the same version, and so material
@@ -79,14 +106,18 @@ export function AssetNode({
     return { root, fit, offset };
   }, [scene, version.meshExtentMm, version.spec.dimensions]);
 
-  // Material overrides are keyed by the material name as it appears in the
-  // mesh, which is what the spec's material names map to for our own output.
+  // Material overrides are keyed by MaterialSpec.id, which survives a
+  // refinement renaming the material - the mesh's own material name does not.
+  // Resolve each mesh material back to the spec id that currently carries its
+  // name, and only fall back to the raw mesh name when nothing in the spec
+  // matches it (a vendor mesh whose material names we do not control).
   useMemo(() => {
     prepared.root.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       for (const material of materials) {
-        const override = node.materialOverrides[material.name];
+        const key = resolveMaterialOverrideKey(material.name, version.spec.materials);
+        const override = node.materialOverrides[key];
         if (!override || !(material instanceof THREE.MeshStandardMaterial)) continue;
         if (override.baseColorHex) material.color.set(override.baseColorHex);
         if (override.roughness !== undefined) material.roughness = override.roughness;
@@ -94,10 +125,12 @@ export function AssetNode({
         material.needsUpdate = true;
       }
     });
-  }, [prepared.root, node.materialOverrides]);
+  }, [prepared.root, node.materialOverrides, version.spec.materials]);
 
   /**
-   * A click either selects the piece or pins a note to the exact spot.
+   * A click either selects the piece or pins a note - to the exact spot, or
+   * to the whole named part under the cursor, depending on the current
+   * selection mode (Shift flips it for this one click).
    *
    * The anchor is converted into THIS group's local space, which is the frame
    * the inner group's offset and fit map the raw mesh into: metres, origin on
@@ -116,6 +149,47 @@ export function AssetNode({
     const group = groupRef.current;
     if (!group) return;
 
+    const hitPartName = event.object.name || null;
+    const wantsWholePart = event.shiftKey ? selectionMode === 'point' : selectionMode === 'part';
+
+    // Our massing meshes name each part after its component; vendor meshes
+    // may not, in which case there is nothing to group by and this falls
+    // back to pinning the exact point regardless of the selection mode.
+    if (wantsWholePart && hitPartName) {
+      const target = baseName(hitPartName).toLowerCase();
+      const matches: THREE.Object3D[] = [];
+      prepared.root.traverse((child) => {
+        if (child instanceof THREE.Mesh && baseName(child.name || '').toLowerCase() === target) {
+          matches.push(child);
+        }
+      });
+
+      if (matches.length > 0) {
+        const worldBox = new THREE.Box3();
+        for (const match of matches) worldBox.union(new THREE.Box3().setFromObject(match));
+
+        // An AABB's corners, not just its min/max, have to go through
+        // worldToLocal individually - the group can be rotated, and
+        // transforming only two opposite corners would not reproduce the
+        // rotated box's true local-space extent.
+        const { min, max } = worldBox;
+        const localCorners = [
+          [min.x, min.y, min.z], [min.x, min.y, max.z], [min.x, max.y, min.z], [min.x, max.y, max.z],
+          [max.x, min.y, min.z], [max.x, min.y, max.z], [max.x, max.y, min.z], [max.x, max.y, max.z],
+        ].map(([x, y, z]) => group.worldToLocal(new THREE.Vector3(x, y, z)));
+        const center = new THREE.Box3().setFromPoints(localCorners).getCenter(new THREE.Vector3());
+
+        onPin({
+          point: { x: center.x, y: center.y, z: center.z },
+          normal: { x: 0, y: 1, z: 0 },
+          partName: baseName(hitPartName),
+          selectionKind: 'part',
+          instanceCount: matches.length,
+        });
+        return;
+      }
+    }
+
     const point = group.worldToLocal(event.point.clone());
 
     const worldNormal = event.face
@@ -128,9 +202,9 @@ export function AssetNode({
     onPin({
       point: { x: point.x, y: point.y, z: point.z },
       normal: { x: normal.x, y: normal.y, z: normal.z },
-      // Our massing meshes name each part after its component; vendor meshes
-      // may not, in which case the server falls back to a positional description.
-      partName: event.object.name || null,
+      partName: hitPartName,
+      selectionKind: 'point',
+      instanceCount: 1,
     });
   };
 

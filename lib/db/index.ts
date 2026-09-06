@@ -3,7 +3,7 @@ import { createSupabaseAdminClient, createSupabaseServerClient } from '@/lib/sup
 
 import { LocalStore } from './local';
 import { SupabaseStore } from './supabase';
-import type { Store } from './store';
+import { SIGNED_URL_TTL_SECONDS, type Store } from './store';
 
 export type { Store } from './store';
 
@@ -53,6 +53,17 @@ export function getWorkerStore(): Store {
 }
 
 /**
+ * The one entry point local-mode code is allowed to reach the process-wide
+ * LocalStore through outside of getSession/getWorkerStore. `lib/share/access`
+ * needs it directly because a share-link request has neither an owner
+ * session nor worker-style pre-authorised access - the token itself is the
+ * only credential, and validating it is that module's job.
+ */
+export function getLocalStoreForShareAccess(): Store {
+  return getLocalStore();
+}
+
+/**
  * Load a project the viewer is allowed to see. In Supabase mode RLS already
  * filters this, but the explicit owner check keeps the worker path honest too.
  */
@@ -60,4 +71,23 @@ export async function requireProject(session: Session, projectId: string) {
   const project = await session.store.getProject(projectId);
   if (!project || project.ownerId !== session.viewer.id) return null;
   return project;
+}
+
+/**
+ * Resolve a blob's URL alongside when it goes stale, so a caller can tell the
+ * browser when to ask for a new one instead of trusting this one forever.
+ *
+ * `null` in local mode: `LocalStore.blobUrl` returns a stable `/api/blob/...`
+ * path that never expires, so there is nothing to schedule a refresh around.
+ */
+export async function blobUrlWithExpiry(
+  store: Store,
+  key: string,
+): Promise<{ url: string; expiresAt: string | null }> {
+  const url = await store.blobUrl(key);
+  const expiresAt =
+    store.kind === 'supabase'
+      ? new Date(Date.now() + SIGNED_URL_TTL_SECONDS * 1000).toISOString()
+      : null;
+  return { url, expiresAt };
 }

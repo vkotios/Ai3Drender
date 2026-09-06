@@ -5,26 +5,36 @@ import type {
   AnnotationStatus,
   AssetVersion,
   FurnitureAsset,
+  FurnitureSpec,
   Job,
   JobStatus,
+  MaterialLibraryEntry,
   Project,
   Scene,
   SceneRender,
+  SceneShareLink,
+  SceneVersion,
   SourceImage,
   Uuid,
 } from '@/lib/types';
+import { generateShareToken, hashShareToken } from '@/lib/share/token';
 import type {
   Blob,
+  MaterialLibraryEntryPatch,
+  MaterialLibraryUsage,
   NewAnnotation,
   NewAsset,
   NewAssetVersion,
   NewJob,
+  NewMaterialLibraryEntry,
   NewSceneRender,
   NewProject,
   NewScene,
+  NewShareLink,
   NewSourceImage,
   Store,
 } from './store';
+import { SceneConflictError, SIGNED_URL_TTL_SECONDS } from './store';
 
 const BUCKET = 'renders';
 
@@ -87,6 +97,7 @@ const toVersion = (r: Row): AssetVersion => ({
   views: r.views ?? [],
   meshPath: r.mesh_path,
   meshExtentMm: r.mesh_extent_mm === null ? null : Number(r.mesh_extent_mm),
+  previewPath: r.preview_path ?? null,
   provider: r.provider,
   providerJobId: r.provider_job_id,
   refinement: r.refinement,
@@ -101,15 +112,34 @@ const toScene = (r: Row): Scene => ({
   doc: r.doc,
   direction: r.direction,
   acceptedAt: r.accepted_at,
+  clientApproval: r.client_approval ?? 'pending',
+  clientApprovalAt: r.client_approval_at,
+  clientApprovalName: r.client_approval_name,
+  clientApprovalNote: r.client_approval_note,
+  version: r.version,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
+});
+
+const toSceneVersion = (r: Row): SceneVersion => ({
+  id: r.id,
+  sceneId: r.scene_id,
+  versionNumber: r.version_number,
+  doc: r.doc,
+  note: r.note,
+  createdAt: r.created_at,
 });
 
 const toAnnotation = (r: Row): Annotation => ({
   id: r.id,
   assetId: r.asset_id,
   assetVersionId: r.asset_version_id,
+  originVersionId: r.origin_version_id,
+  originVersionNumber: Number(r.origin_version_number),
   sceneId: r.scene_id,
+  // Rows written before this column existed default to 'point' here too, so
+  // an old note still round-trips instead of failing to resolve a shape.
+  selectionKind: r.selection_kind ?? 'point',
   point: r.point,
   normal: r.normal,
   partName: r.part_name,
@@ -118,7 +148,22 @@ const toAnnotation = (r: Row): Annotation => ({
   anchorDescription: r.anchor_description,
   body: r.body,
   status: r.status,
+  source: r.source ?? 'internal',
+  clientName: r.client_name,
   resolvedByVersionId: r.resolved_by_version_id,
+  staleNote: r.stale_note,
+  createdAt: r.created_at,
+});
+
+const toShareLink = (r: Row): SceneShareLink => ({
+  id: r.id,
+  sceneId: r.scene_id,
+  createdBy: r.created_by,
+  role: r.role,
+  label: r.label,
+  expiresAt: r.expires_at,
+  revokedAt: r.revoked_at,
+  lastAccessedAt: r.last_accessed_at,
   createdAt: r.created_at,
 });
 
@@ -150,6 +195,25 @@ const toJob = (r: Row): Job => ({
   maxAttempts: r.max_attempts ?? 3,
   leaseExpiresAt: r.lease_expires_at ?? null,
   nextAttemptAt: r.next_attempt_at ?? null,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+});
+
+const toMaterialLibraryEntry = (r: Row): MaterialLibraryEntry => ({
+  id: r.id,
+  ownerId: r.owner_id,
+  name: r.name,
+  code: r.code,
+  kind: r.kind,
+  baseColorHex: r.base_color_hex,
+  roughness: Number(r.roughness),
+  metalness: Number(r.metalness),
+  sheen: Number(r.sheen),
+  clearcoat: Number(r.clearcoat),
+  finish: r.finish,
+  notes: r.notes,
+  swatchPath: r.swatch_path,
+  archivedAt: r.archived_at,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
@@ -211,6 +275,12 @@ export class SupabaseStore implements Store {
     // Every child table cascades from projects, so one delete is enough.
     const { error } = await this.db.from('projects').delete().eq('id', id);
     if (error) throw new Error(`deleteProject: ${error.message}`);
+    // Every blob for this project lives under one prefix. A stranded file is
+    // better than a project whose row delete failed because storage hiccuped,
+    // so this is best-effort: log and move on.
+    await this.deleteBlobPrefix(id).catch((cause) => {
+      console.error(`[store] deleteProject: failed to remove blobs for project ${id}`, cause);
+    });
   }
 
   /* Source images ---------------------------------------------------------- */
@@ -251,8 +321,15 @@ export class SupabaseStore implements Store {
   }
 
   async deleteSourceImage(id: Uuid): Promise<void> {
+    // Read the key before the row disappears - nothing else records it.
+    const existing = await this.db.from('source_images').select('path').eq('id', id).maybeSingle();
     const { error } = await this.db.from('source_images').delete().eq('id', id);
     if (error) throw new Error(`deleteSourceImage: ${error.message}`);
+    const path: string | undefined = existing.data?.path;
+    if (!path) return;
+    await this.deleteBlob(path).catch((cause) => {
+      console.error(`[store] deleteSourceImage: failed to remove blob ${path}`, cause);
+    });
   }
 
   /* Assets ----------------------------------------------------------------- */
@@ -297,8 +374,37 @@ export class SupabaseStore implements Store {
   }
 
   async deleteAsset(id: Uuid): Promise<void> {
+    // Every synthesized view and the reconstructed mesh carry their own
+    // storage key on the version row, so no path convention needs guessing -
+    // just read them before the cascade takes the versions with the asset.
+    const versions = await this.db
+      .from('asset_versions')
+      .select('views, mesh_path')
+      .eq('asset_id', id);
+
     const { error } = await this.db.from('furniture_assets').delete().eq('id', id);
     if (error) throw new Error(`deleteAsset: ${error.message}`);
+
+    if (versions.error) {
+      console.error(`[store] deleteAsset: could not look up blobs for asset ${id}`, versions.error);
+      return;
+    }
+    // A `fromSource` view is not the asset's to delete: analysis points it
+    // straight at the project's own source-image blob rather than copying
+    // it, and that blob is only ever the source image row's to delete.
+    const keys = versions.data.flatMap((v: Row) => [
+      ...((v.views ?? []) as { path: string; fromSource: boolean }[])
+        .filter((view) => !view.fromSource)
+        .map((view) => view.path),
+      ...(v.mesh_path ? [v.mesh_path as string] : []),
+    ]);
+    await Promise.all(
+      keys.map((key) =>
+        this.deleteBlob(key).catch((cause) => {
+          console.error(`[store] deleteAsset: failed to remove blob ${key}`, cause);
+        }),
+      ),
+    );
   }
 
   /* Asset versions --------------------------------------------------------- */
@@ -315,6 +421,7 @@ export class SupabaseStore implements Store {
         views: input.views,
         mesh_path: input.meshPath,
         mesh_extent_mm: input.meshExtentMm,
+        preview_path: input.previewPath,
         provider: input.provider,
         provider_job_id: input.providerJobId,
         refinement: input.refinement,
@@ -347,6 +454,7 @@ export class SupabaseStore implements Store {
     if (patch.views !== undefined) update.views = patch.views;
     if (patch.meshPath !== undefined) update.mesh_path = patch.meshPath;
     if (patch.meshExtentMm !== undefined) update.mesh_extent_mm = patch.meshExtentMm;
+    if (patch.previewPath !== undefined) update.preview_path = patch.previewPath;
     if (patch.provider !== undefined) update.provider = patch.provider;
     if (patch.providerJobId !== undefined) update.provider_job_id = patch.providerJobId;
     if (patch.refinement !== undefined) update.refinement = patch.refinement;
@@ -390,34 +498,159 @@ export class SupabaseStore implements Store {
     return unwrap('listScenes', res).map(toScene);
   }
 
-  async updateScene(id: Uuid, patch: Partial<Scene>, note = ''): Promise<Scene> {
+  async updateScene(
+    id: Uuid,
+    patch: Partial<Scene>,
+    note = '',
+    expectedVersion?: number,
+  ): Promise<Scene> {
     const update: Row = {};
     if (patch.name !== undefined) update.name = patch.name;
     if (patch.doc !== undefined) update.doc = patch.doc;
     if (patch.direction !== undefined) update.direction = patch.direction;
     if (patch.acceptedAt !== undefined) update.accepted_at = patch.acceptedAt;
-    const res = await this.db.from('scenes').update(update).eq('id', id).select().single();
-    const scene = toScene(unwrap('updateScene', res));
+    if (patch.clientApproval !== undefined) update.client_approval = patch.clientApproval;
+    if (patch.clientApprovalAt !== undefined) update.client_approval_at = patch.clientApprovalAt;
+    if (patch.clientApprovalName !== undefined) update.client_approval_name = patch.clientApprovalName;
+    if (patch.clientApprovalNote !== undefined) update.client_approval_note = patch.clientApprovalNote;
+
+    // `version` itself is never set here - a trigger bumps it whenever `doc`
+    // actually changes. The `.eq('version', expectedVersion)` below is the
+    // optimistic-concurrency check: it is only added for content-changing
+    // saves that named the version they loaded, so background jobs and
+    // restores (which pass no expectedVersion) always win.
+    let query = this.db.from('scenes').update(update).eq('id', id);
+    if (patch.doc !== undefined && expectedVersion !== undefined) {
+      query = query.eq('version', expectedVersion);
+    }
+    const res = await query.select().maybeSingle();
+    if (res.error) throw new Error(`updateScene: ${res.error.message}`);
+
+    if (!res.data) {
+      // Zero rows matched: either the scene is gone, or the version guard
+      // above failed. Load the current row to tell the two apart and, for a
+      // conflict, hand the caller what the scene looks like now.
+      const current = await this.getScene(id);
+      if (!current) throw new Error(`scene ${id} not found`);
+      throw new SceneConflictError(current);
+    }
+    const scene = toScene(res.data);
 
     if (patch.doc !== undefined) {
-      const latest = await this.db
-        .from('scene_versions')
-        .select('version_number')
-        .eq('scene_id', id)
-        .order('version_number', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      const next = (latest.data?.version_number ?? 0) + 1;
       await this.db
         .from('scene_versions')
-        .insert({ scene_id: id, version_number: next, doc: patch.doc, note });
+        .insert({ scene_id: id, version_number: scene.version, doc: patch.doc, note });
     }
     return scene;
   }
 
   async deleteScene(id: Uuid): Promise<void> {
+    // Read the owning project before the row disappears - the delete-by-prefix
+    // needs it and the cascade would otherwise take it with the scene.
+    const existing = await this.db.from('scenes').select('project_id').eq('id', id).maybeSingle();
     const { error } = await this.db.from('scenes').delete().eq('id', id);
     if (error) throw new Error(`deleteScene: ${error.message}`);
+    const projectId: string | undefined = existing.data?.project_id;
+    if (!projectId) return;
+    // One prefix covers every pathtraced/concept render for this scene, plus
+    // any viewport capture a crashed concept-render job never cleaned up.
+    await this.deleteBlobPrefix(`${projectId}/renders/${id}`).catch((cause) => {
+      console.error(`[store] deleteScene: failed to remove render blobs for scene ${id}`, cause);
+    });
+  }
+
+  async listSceneVersions(sceneId: Uuid): Promise<SceneVersion[]> {
+    const res = await this.db
+      .from('scene_versions')
+      .select('*')
+      .eq('scene_id', sceneId)
+      .order('version_number', { ascending: false });
+    return unwrap('listSceneVersions', res).map(toSceneVersion);
+  }
+
+  async getSceneVersion(sceneId: Uuid, versionNumber: number): Promise<SceneVersion | null> {
+    const res = await this.db
+      .from('scene_versions')
+      .select('*')
+      .eq('scene_id', sceneId)
+      .eq('version_number', versionNumber)
+      .maybeSingle();
+    if (res.error) throw new Error(`getSceneVersion: ${res.error.message}`);
+    return res.data ? toSceneVersion(res.data) : null;
+  }
+
+  /* Scene share links -------------------------------------------------------
+   * The raw token is hashed before it ever reaches the database - only the
+   * caller that just created it sees the clear value. */
+
+  async createShareLink(input: NewShareLink): Promise<{ link: SceneShareLink; token: string }> {
+    const token = generateShareToken();
+    const res = await this.db
+      .from('scene_share_links')
+      .insert({
+        scene_id: input.sceneId,
+        created_by: input.createdBy,
+        role: input.role ?? 'commenter',
+        label: input.label ?? null,
+        expires_at: input.expiresAt ?? null,
+        token_hash: hashShareToken(token),
+      })
+      .select()
+      .single();
+    return { link: toShareLink(unwrap('createShareLink', res)), token };
+  }
+
+  async listShareLinks(sceneId: Uuid): Promise<SceneShareLink[]> {
+    const res = await this.db
+      .from('scene_share_links')
+      .select('*')
+      .eq('scene_id', sceneId)
+      .order('created_at', { ascending: false });
+    return unwrap('listShareLinks', res).map(toShareLink);
+  }
+
+  async getShareLink(id: Uuid): Promise<SceneShareLink | null> {
+    const res = await this.db.from('scene_share_links').select('*').eq('id', id).maybeSingle();
+    if (res.error) throw new Error(`getShareLink: ${res.error.message}`);
+    return res.data ? toShareLink(res.data) : null;
+  }
+
+  async getShareLinkByToken(token: string): Promise<SceneShareLink | null> {
+    const res = await this.db
+      .from('scene_share_links')
+      .select('*')
+      .eq('token_hash', hashShareToken(token))
+      .maybeSingle();
+    if (res.error) throw new Error(`getShareLinkByToken: ${res.error.message}`);
+    return res.data ? toShareLink(res.data) : null;
+  }
+
+  async revokeShareLink(id: Uuid): Promise<SceneShareLink> {
+    // Idempotent: revoking an already-revoked link keeps its original
+    // revocation time rather than sliding it forward.
+    const existing = await this.db
+      .from('scene_share_links')
+      .select('revoked_at')
+      .eq('id', id)
+      .maybeSingle();
+    if (existing.error) throw new Error(`revokeShareLink: ${existing.error.message}`);
+    if (!existing.data) throw new Error(`share link ${id} not found`);
+
+    const res = await this.db
+      .from('scene_share_links')
+      .update({ revoked_at: existing.data.revoked_at ?? new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    return toShareLink(unwrap('revokeShareLink', res));
+  }
+
+  async touchShareLink(id: Uuid): Promise<void> {
+    const { error } = await this.db
+      .from('scene_share_links')
+      .update({ last_accessed_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) throw new Error(`touchShareLink: ${error.message}`);
   }
 
   /* Jobs ------------------------------------------------------------------- */
@@ -569,7 +802,10 @@ export class SupabaseStore implements Store {
       .insert({
         asset_id: input.assetId,
         asset_version_id: input.assetVersionId,
+        origin_version_id: input.originVersionId,
+        origin_version_number: input.originVersionNumber,
         scene_id: input.sceneId,
+        selection_kind: input.selectionKind,
         point: input.point,
         normal: input.normal,
         part_name: input.partName,
@@ -577,6 +813,9 @@ export class SupabaseStore implements Store {
         component_role: input.componentRole,
         anchor_description: input.anchorDescription,
         body: input.body,
+        source: input.source,
+        client_name: input.clientName,
+        stale_note: input.staleNote,
       })
       .select()
       .single();
@@ -604,6 +843,13 @@ export class SupabaseStore implements Store {
     if (patch.resolvedByVersionId !== undefined) {
       update.resolved_by_version_id = patch.resolvedByVersionId;
     }
+    // Carrying a note forward re-points it at the new version and refreshes
+    // everything derived from that version's spec.
+    if (patch.assetVersionId !== undefined) update.asset_version_id = patch.assetVersionId;
+    if (patch.componentName !== undefined) update.component_name = patch.componentName;
+    if (patch.componentRole !== undefined) update.component_role = patch.componentRole;
+    if (patch.anchorDescription !== undefined) update.anchor_description = patch.anchorDescription;
+    if (patch.staleNote !== undefined) update.stale_note = patch.staleNote;
     const res = await this.db.from('annotations').update(update).eq('id', id).select().single();
     return toAnnotation(unwrap('updateAnnotation', res));
   }
@@ -671,11 +917,190 @@ export class SupabaseStore implements Store {
     if (error) throw new Error(`deleteBlob ${key}: ${error.message}`);
   }
 
+  async deleteBlobPrefix(prefix: string): Promise<void> {
+    // Refuse the one input that would otherwise sweep the whole bucket -
+    // mirrors LocalStore, whose blobPath() rejects an empty key the same way.
+    if (!prefix) throw new Error('deleteBlobPrefix: refusing to sweep the whole bucket');
+    const keys = await this.listBlobKeys(prefix);
+    if (keys.length === 0) return;
+    // Storage's remove() takes a flat array of full paths; batch defensively
+    // so one very large project cannot blow past whatever limit it has.
+    for (let i = 0; i < keys.length; i += 100) {
+      const { error } = await this.db.storage.from(BUCKET).remove(keys.slice(i, i + 100));
+      if (error) throw new Error(`deleteBlobPrefix ${prefix}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Storage "folders" are only key prefixes - there is no recursive list or
+   * delete API - so covering one means walking it by hand: list immediate
+   * children, recurse into the ones that are themselves prefixes (a `null`
+   * id marks those), and collect every real object's full path.
+   */
+  async listBlobKeys(prefix = ''): Promise<string[]> {
+    const keys: string[] = [];
+    const limit = 1000;
+    for (let offset = 0; ; offset += limit) {
+      const { data, error } = await this.db.storage.from(BUCKET).list(prefix, { limit, offset });
+      if (error) throw new Error(`listBlobKeys ${prefix}: ${error.message}`);
+      if (!data || data.length === 0) break;
+      for (const entry of data) {
+        const full = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.id === null) {
+          keys.push(...(await this.listBlobKeys(full)));
+        } else {
+          keys.push(full);
+        }
+      }
+      if (data.length < limit) break;
+    }
+    return keys;
+  }
+
   async blobUrl(key: string): Promise<string> {
-    // The bucket is private, so hand out a short-lived signed URL. One hour is
-    // long enough for a studio session without leaving links usable forever.
-    const { data, error } = await this.db.storage.from(BUCKET).createSignedUrl(key, 3600);
+    // The bucket is private, so hand out a short-lived signed URL. Long-lived
+    // pages (the studio viewport) re-resolve this before it goes stale rather
+    // than the TTL being stretched to cover a whole session - see
+    // `blobUrlWithExpiry` in lib/db/index.ts and `GET /api/blob-url`.
+    const { data, error } = await this.db.storage
+      .from(BUCKET)
+      .createSignedUrl(key, SIGNED_URL_TTL_SECONDS);
     if (error || !data) throw new Error(`blobUrl ${key}: ${error?.message ?? 'no url'}`);
     return data.signedUrl;
+  }
+
+  /* Material library --------------------------------------------------------- */
+
+  async createMaterialLibraryEntry(input: NewMaterialLibraryEntry): Promise<MaterialLibraryEntry> {
+    const res = await this.db
+      .from('material_library_entries')
+      .insert({
+        owner_id: input.ownerId,
+        name: input.name,
+        code: input.code,
+        kind: input.kind,
+        base_color_hex: input.baseColorHex,
+        roughness: input.roughness,
+        metalness: input.metalness,
+        sheen: input.sheen,
+        clearcoat: input.clearcoat,
+        finish: input.finish,
+        notes: input.notes,
+        swatch_path: input.swatchPath,
+        archived_at: input.archivedAt,
+      })
+      .select()
+      .single();
+    return toMaterialLibraryEntry(unwrap('createMaterialLibraryEntry', res));
+  }
+
+  async getMaterialLibraryEntry(id: Uuid): Promise<MaterialLibraryEntry | null> {
+    const res = await this.db
+      .from('material_library_entries')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+    if (res.error) throw new Error(`getMaterialLibraryEntry: ${res.error.message}`);
+    return res.data ? toMaterialLibraryEntry(res.data) : null;
+  }
+
+  async listMaterialLibraryEntries(
+    ownerId: string,
+    options?: { includeArchived?: boolean },
+  ): Promise<MaterialLibraryEntry[]> {
+    let q = this.db.from('material_library_entries').select('*').eq('owner_id', ownerId);
+    if (!options?.includeArchived) q = q.is('archived_at', null);
+    const res = await q.order('name');
+    return unwrap('listMaterialLibraryEntries', res).map(toMaterialLibraryEntry);
+  }
+
+  async updateMaterialLibraryEntry(
+    id: Uuid,
+    patch: MaterialLibraryEntryPatch,
+  ): Promise<MaterialLibraryEntry> {
+    const update: Row = {};
+    if (patch.name !== undefined) update.name = patch.name;
+    if (patch.code !== undefined) update.code = patch.code;
+    if (patch.kind !== undefined) update.kind = patch.kind;
+    if (patch.baseColorHex !== undefined) update.base_color_hex = patch.baseColorHex;
+    if (patch.roughness !== undefined) update.roughness = patch.roughness;
+    if (patch.metalness !== undefined) update.metalness = patch.metalness;
+    if (patch.sheen !== undefined) update.sheen = patch.sheen;
+    if (patch.clearcoat !== undefined) update.clearcoat = patch.clearcoat;
+    if (patch.finish !== undefined) update.finish = patch.finish;
+    if (patch.notes !== undefined) update.notes = patch.notes;
+    if (patch.swatchPath !== undefined) update.swatch_path = patch.swatchPath;
+    if (patch.archivedAt !== undefined) update.archived_at = patch.archivedAt;
+    const res = await this.db
+      .from('material_library_entries')
+      .update(update)
+      .eq('id', id)
+      .select()
+      .single();
+    return toMaterialLibraryEntry(unwrap('updateMaterialLibraryEntry', res));
+  }
+
+  async deleteMaterialLibraryEntry(id: Uuid): Promise<void> {
+    const { error } = await this.db.from('material_library_entries').delete().eq('id', id);
+    if (error) throw new Error(`deleteMaterialLibraryEntry: ${error.message}`);
+  }
+
+  async listMaterialLibraryUsage(
+    ownerId: string,
+    libraryEntryId: Uuid,
+  ): Promise<MaterialLibraryUsage[]> {
+    const projectsRes = await this.db.from('projects').select('id, name').eq('owner_id', ownerId);
+    const projects = unwrap('listMaterialLibraryUsage', projectsRes);
+    if (projects.length === 0) return [];
+    const projectById = new Map(projects.map((p) => [p.id as string, p]));
+
+    const assetsRes = await this.db
+      .from('furniture_assets')
+      .select('id, name, project_id, current_version_id')
+      .in('project_id', [...projectById.keys()]);
+    const assets = unwrap('listMaterialLibraryUsage', assetsRes);
+    if (assets.length === 0) return [];
+    const assetById = new Map(assets.map((a) => [a.id as string, a]));
+
+    const versionsRes = await this.db
+      .from('asset_versions')
+      .select('id, asset_id, version_number, spec')
+      .in('asset_id', [...assetById.keys()]);
+    const versions = unwrap('listMaterialLibraryUsage', versionsRes);
+
+    // A jsonb containment query (`spec->'materials' @> ...`) could filter this
+    // server-side, but matching "some element of the array has this
+    // libraryEntryId" precisely - without also matching on every other field
+    // of that element - is easy to get subtly wrong with `@>`'s per-element
+    // semantics. Row counts here are one manufacturer's catalogue against its
+    // own asset versions, not a table scan, so filtering in application code
+    // (mirroring LocalStore) is simpler and just as correct.
+    const usage: MaterialLibraryUsage[] = [];
+    for (const row of versions) {
+      const asset = assetById.get(row.asset_id as string);
+      if (!asset) continue;
+      const project = projectById.get(asset.project_id as string);
+      if (!project) continue;
+      const spec = row.spec as FurnitureSpec;
+
+      for (const material of spec.materials ?? []) {
+        if (material.libraryEntryId !== libraryEntryId) continue;
+        usage.push({
+          projectId: project.id,
+          projectName: project.name,
+          assetId: asset.id,
+          assetName: asset.name,
+          assetVersionId: row.id,
+          versionNumber: row.version_number,
+          isCurrentVersion: asset.current_version_id === row.id,
+          materialId: material.id,
+          materialName: material.name,
+          components: (spec.components ?? [])
+            .filter((c) => c.materialId === material.id)
+            .map((c) => ({ name: c.name, role: c.role })),
+        });
+      }
+    }
+    return usage;
   }
 }

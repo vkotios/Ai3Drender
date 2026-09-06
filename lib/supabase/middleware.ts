@@ -5,9 +5,12 @@ import { env, hasSupabase } from '@/lib/env';
 
 /**
  * Paths reachable without a session. Everything else redirects to sign-in.
- * `/auth` covers the OAuth/magic-link callback and sign-out.
+ * `/auth` covers the OAuth/magic-link callback and sign-out. `/share` is the
+ * client review view: it is gated by its own token, not a Supabase session,
+ * by design (see lib/share/access.ts) - it must stay reachable by someone
+ * with no account at all.
  */
-const PUBLIC_PREFIXES = ['/sign-in', '/auth'];
+const PUBLIC_PREFIXES = ['/sign-in', '/auth', '/share'];
 
 const isPublic = (pathname: string) =>
   PUBLIC_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));

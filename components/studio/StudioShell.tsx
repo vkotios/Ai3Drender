@@ -20,7 +20,9 @@ import { AnnotationPanel } from './AnnotationPanel';
 import { Inspector } from './Inspector';
 import { RenderPanel, type StoredRender } from './RenderPanel';
 import { Outliner } from './Outliner';
+import { SharePanel } from './SharePanel';
 import type { GizmoMode, RenderMode, RenderSettings } from './StudioCanvas';
+import { VersionHistory } from './VersionHistory';
 
 // WebGL cannot render on the server, and drei's Environment pulls its HDRIs at
 // runtime, so the viewport is client-only.
@@ -57,10 +59,11 @@ export function StudioShell({
   const markSaved = useStudio((s) => s.markSaved);
   const mode = useStudio((s) => s.mode);
   const setMode = useStudio((s) => s.setMode);
+  const selectionMode = useStudio((s) => s.selectionMode);
   const setAnnotations = useStudio((s) => s.setAnnotations);
 
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>('translate');
-  const [panel, setPanel] = useState<'inspect' | 'render'>('inspect');
+  const [panel, setPanel] = useState<'inspect' | 'render' | 'history'>('inspect');
   const [renderMode, setRenderMode] = useState<RenderMode>('preview');
   const [renderSettings, setRenderSettings] = useState<RenderSettings>({
     bounces: 5,
@@ -74,6 +77,11 @@ export function StudioShell({
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sharePanelOpen, setSharePanelOpen] = useState(false);
+  const [clientApproval, setClientApproval] = useState(scene.clientApproval);
+  // Set when a save is rejected because the scene moved on since it was
+  // loaded - `current` is the server's own record of where it moved to.
+  const [conflict, setConflict] = useState<{ current: Scene } | null>(null);
   const exportRoot = useRef<THREE.Group | null>(null);
 
   // Seeded in an effect rather than during render: the studio store is a
@@ -192,25 +200,60 @@ export function StudioShell({
     setAnnotations(lists.flat());
   }, [setAnnotations]);
 
-  const save = useCallback(async () => {
-    const current = useStudio.getState().doc;
-    if (!current) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const response = await fetch(`/api/scenes/${scene.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc: current, note: 'edited in studio' }),
-      });
-      if (!response.ok) throw new Error((await response.json()).error ?? 'Save failed');
-      markSaved(await response.json());
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Save failed');
-    } finally {
-      setSaving(false);
-    }
-  }, [scene.id, markSaved]);
+  /**
+   * `force` skips the version check entirely - used only for the "overwrite
+   * anyway" choice in the conflict dialog below, once the user has seen what
+   * they'd be overwriting and chosen to anyway.
+   */
+  const save = useCallback(
+    async (force = false) => {
+      const state = useStudio.getState();
+      const current = state.doc;
+      const loaded = state.scene;
+      if (!current || !loaded) return;
+      setSaving(true);
+      setError(null);
+      try {
+        const response = await fetch(`/api/scenes/${scene.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            doc: current,
+            note: 'edited in studio',
+            // The version this edit was staged on top of - the server
+            // rejects the write if someone else has saved since.
+            expectedVersion: loaded.version,
+            force,
+          }),
+        });
+        if (response.status === 409) {
+          const body = (await response.json()) as { current: Scene };
+          setConflict({ current: body.current });
+          return;
+        }
+        if (!response.ok) throw new Error((await response.json()).error ?? 'Save failed');
+        markSaved(await response.json());
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'Save failed');
+      } finally {
+        setSaving(false);
+      }
+    },
+    [scene.id, markSaved],
+  );
+
+  /** "Reload" in the conflict dialog: drop local edits, pull the current save. */
+  const reloadFromServer = useCallback(async () => {
+    setConflict(null);
+    const refreshed = await fetch(`/api/scenes/${scene.id}`).then((r) => r.json());
+    load(refreshed.scene, refreshed.versions, refreshed.annotations);
+  }, [scene.id, load]);
+
+  /** "Overwrite anyway" in the conflict dialog: save over the other write. */
+  const overwriteAnyway = useCallback(() => {
+    setConflict(null);
+    void save(true);
+  }, [save]);
 
   // Warn before losing unsaved staging work.
   useEffect(() => {
@@ -268,6 +311,11 @@ export function StudioShell({
         </Link>
         <span className="text-shell-700">/</span>
         <h1 className="text-sm font-medium text-shell-100">{scene.name}</h1>
+        {clientApproval !== 'pending' && (
+          <Badge tone={clientApproval === 'approved' ? 'good' : 'bad'}>
+            {clientApproval === 'approved' ? 'Client approved' : 'Client requested changes'}
+          </Badge>
+        )}
         {dirty && <Badge tone="warn">Unsaved</Badge>}
         {busy && <Badge tone="busy">{busy}…</Badge>}
         {error && (
@@ -317,13 +365,41 @@ export function StudioShell({
             Render
           </Button>
 
+          <Button
+            size="sm"
+            variant={panel === 'history' ? 'primary' : 'default'}
+            onClick={() => setPanel((p) => (p === 'history' ? 'inspect' : 'history'))}
+          >
+            History
+          </Button>
+
           <Button size="sm" onClick={artDirect} disabled={Boolean(busy)}>
             Art-direct
           </Button>
 
+          <div className="relative">
+            <Button size="sm" onClick={() => setSharePanelOpen((v) => !v)}>
+              Share ▾
+            </Button>
+            {sharePanelOpen && (
+              <SharePanel
+                sceneId={scene.id}
+                onClose={() => {
+                  setSharePanelOpen(false);
+                  // The client may have signed off since this page loaded -
+                  // pick that up whenever the owner closes the link panel.
+                  fetch(`/api/scenes/${scene.id}`)
+                    .then((r) => (r.ok ? r.json() : null))
+                    .then((data) => data?.scene && setClientApproval(data.scene.clientApproval))
+                    .catch(() => {});
+                }}
+              />
+            )}
+          </div>
+
           <ExportMenu onExport={handleExport} disabled={Boolean(busy)} />
 
-          <Button size="sm" variant="primary" onClick={save} disabled={saving || !dirty}>
+          <Button size="sm" variant="primary" onClick={() => void save()} disabled={saving || !dirty}>
             {saving ? 'Saving…' : 'Save'}
           </Button>
         </div>
@@ -352,7 +428,9 @@ export function StudioShell({
                   converged ? ' · converged' : ''
                 }`
               : mode === 'comment'
-                ? 'Click anywhere on a piece to pin a note there'
+                ? selectionMode === 'part'
+                  ? 'Click a piece to note the whole part it belongs to · hold Shift for one exact point'
+                  : 'Click anywhere on a piece to pin a note there · hold Shift to note the whole part'
                 : 'Drag to orbit · scroll to zoom · click a piece to select it'}
           </p>
         </main>
@@ -378,6 +456,8 @@ export function StudioShell({
               conceptAvailable={conceptAvailable}
               busy={busy}
             />
+          ) : panel === 'history' ? (
+            <VersionHistory sceneId={scene.id} onRestored={(restored) => markSaved(restored)} />
           ) : mode === 'comment' ? (
             <AnnotationPanel sceneId={scene.id} onChanged={refresh} />
           ) : (
@@ -385,6 +465,29 @@ export function StudioShell({
           )}
         </aside>
       </div>
+
+      {conflict && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-lg border border-shell-700 bg-shell-900 p-4 shadow-xl">
+            <h2 className="text-sm font-semibold text-shell-100">Someone else saved changes</h2>
+            <p className="mt-2 text-xs leading-relaxed text-shell-400">
+              This scene was saved again since you loaded it — it&rsquo;s now at version{' '}
+              {conflict.current.version}, last saved{' '}
+              {new Date(conflict.current.updatedAt).toLocaleString()}. Reload to see that version, or
+              overwrite it with your changes. Nothing is lost either way — every save is kept in{' '}
+              <span className="text-shell-100">History</span>.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button size="sm" variant="danger" onClick={overwriteAnyway}>
+                Overwrite anyway
+              </Button>
+              <Button size="sm" variant="primary" onClick={() => void reloadFromServer()}>
+                Reload
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
