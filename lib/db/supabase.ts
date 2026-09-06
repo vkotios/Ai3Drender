@@ -28,6 +28,13 @@ import type {
 
 const BUCKET = 'renders';
 
+/**
+ * How long a claim is good for. Long enough that a stage polling a slow mesh
+ * vendor is not reclaimed mid-flight, since it extends the lease as it
+ * reports progress anyway.
+ */
+const DEFAULT_LEASE_MS = 5 * 60_000;
+
 /* Row <-> domain mapping ----------------------------------------------------
  * Postgres columns are snake_case; the domain model is camelCase. Keeping the
  * translation in one place means no other module has to know about columns.  */
@@ -140,6 +147,9 @@ const toJob = (r: Row): Job => ({
   input: r.input ?? {},
   output: r.output,
   attempts: r.attempts,
+  maxAttempts: r.max_attempts ?? 3,
+  leaseExpiresAt: r.lease_expires_at ?? null,
+  nextAttemptAt: r.next_attempt_at ?? null,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
@@ -421,6 +431,7 @@ export class SupabaseStore implements Store {
         kind: input.kind,
         input: input.input ?? {},
         message: 'Queued',
+        max_attempts: input.maxAttempts ?? 3,
       })
       .select()
       .single();
@@ -448,31 +459,41 @@ export class SupabaseStore implements Store {
     if (patch.error !== undefined) update.error = patch.error;
     if (patch.output !== undefined) update.output = patch.output;
     if (patch.attempts !== undefined) update.attempts = patch.attempts;
+    if (patch.maxAttempts !== undefined) update.max_attempts = patch.maxAttempts;
+    if (patch.leaseExpiresAt !== undefined) update.lease_expires_at = patch.leaseExpiresAt;
+    if (patch.nextAttemptAt !== undefined) update.next_attempt_at = patch.nextAttemptAt;
     const res = await this.db.from('jobs').update(update).eq('id', id).select().single();
     return toJob(unwrap('updateJob', res));
   }
 
-  async claimNextJob(): Promise<Job | null> {
+  async claimNextJob(leaseMs = DEFAULT_LEASE_MS): Promise<Job | null> {
     // Optimistic claim: several workers may select the same row, but the
     // `.eq('status','queued')` guard on the update means only one wins. A
     // loser sees zero rows back and retries with the next candidate.
+    const nowIso = new Date().toISOString();
+
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const candidate = await this.db
         .from('jobs')
         .select('id, attempts')
         .eq('status', 'queued')
+        // A job backing off after a failure is not yet claimable.
+        .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
         .order('created_at')
         .limit(1)
         .maybeSingle();
       if (candidate.error) throw new Error(`claimNextJob: ${candidate.error.message}`);
       if (!candidate.data) return null;
 
+      const attempts = (candidate.data.attempts ?? 0) + 1;
       const claimed = await this.db
         .from('jobs')
         .update({
           status: 'running',
-          message: 'Starting',
-          attempts: (candidate.data.attempts ?? 0) + 1,
+          message: attempts > 1 ? `Retrying (attempt ${attempts})` : 'Starting',
+          attempts,
+          lease_expires_at: new Date(Date.now() + leaseMs).toISOString(),
+          next_attempt_at: null,
         })
         .eq('id', candidate.data.id)
         .eq('status', 'queued')
@@ -482,6 +503,62 @@ export class SupabaseStore implements Store {
       if (claimed.data) return toJob(claimed.data);
     }
     return null;
+  }
+
+  async extendLease(id: Uuid, leaseMs: number): Promise<void> {
+    // Guarded on `running` so a job already reclaimed from a stalled worker
+    // cannot be pulled back by that worker finally waking up.
+    const { error } = await this.db
+      .from('jobs')
+      .update({ lease_expires_at: new Date(Date.now() + leaseMs).toISOString() })
+      .eq('id', id)
+      .eq('status', 'running');
+    if (error) throw new Error(`extendLease: ${error.message}`);
+  }
+
+  async reclaimExpiredJobs(): Promise<number> {
+    const nowIso = new Date().toISOString();
+
+    const expired = await this.db
+      .from('jobs')
+      .select('id, attempts, max_attempts')
+      .eq('status', 'running')
+      .lt('lease_expires_at', nowIso);
+    if (expired.error) throw new Error(`reclaimExpiredJobs: ${expired.error.message}`);
+    if (!expired.data?.length) return 0;
+
+    let reclaimed = 0;
+    for (const row of expired.data) {
+      const exhausted = (row.attempts ?? 0) >= (row.max_attempts ?? 3);
+      const { data, error } = await this.db
+        .from('jobs')
+        .update(
+          exhausted
+            ? {
+                status: 'failed',
+                message: 'Failed',
+                error: `Abandoned by a worker after ${row.attempts} attempt(s)`,
+                lease_expires_at: null,
+              }
+            : {
+                status: 'queued',
+                message: 'Queued after a worker stopped responding',
+                lease_expires_at: null,
+                // Straight back in: the lease itself already provided a delay.
+                next_attempt_at: null,
+              },
+        )
+        // Still guarded on the expired lease, so a worker that revived and
+        // extended its claim between the select and here keeps it.
+        .eq('id', row.id)
+        .eq('status', 'running')
+        .lt('lease_expires_at', nowIso)
+        .select('id')
+        .maybeSingle();
+      if (error) throw new Error(`reclaimExpiredJobs: ${error.message}`);
+      if (data) reclaimed += 1;
+    }
+    return reclaimed;
   }
 
   /* Annotations ------------------------------------------------------------ */

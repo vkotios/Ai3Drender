@@ -332,7 +332,23 @@ export interface Job {
   error: string | null;
   input: Record<string, unknown>;
   output: Record<string, unknown> | null;
+  /** Completed tries, including the one in flight. */
   attempts: number;
+  /** Tries allowed before a retryable failure becomes permanent. */
+  maxAttempts: number;
+  /**
+   * When the current claim lapses.
+   *
+   * A worker that dies mid-job cannot release its own claim, so the row would
+   * otherwise sit in `running` forever. Whoever drains the queue next reclaims
+   * anything past this and puts it back in the queue.
+   */
+  leaseExpiresAt: IsoDate | null;
+  /**
+   * Earliest time this job may be claimed. Set when a retry is scheduled, so
+   * a failing vendor is backed off rather than hammered.
+   */
+  nextAttemptAt: IsoDate | null;
   createdAt: IsoDate;
   updatedAt: IsoDate;
 }

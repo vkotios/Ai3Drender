@@ -12,6 +12,8 @@ import { getMeshProvider } from '@/lib/ai/mesh';
 import type { Store } from '@/lib/db';
 import { env } from '@/lib/env';
 import { formatAnnotationForPrompt } from '@/lib/scene/anchor';
+
+import { backoffMs, isRetryable } from './errors';
 import type { AssetVersion, Job, RefinementRequest, SourceImage, SynthesizedView } from '@/lib/types';
 
 /**
@@ -451,6 +453,13 @@ const STAGES: Record<Job['kind'], (ctx: StageContext) => Promise<Record<string, 
   concept_render: runConceptRender,
 };
 
+/**
+ * How long a claim is good for, and how often a working stage renews it.
+ * Renewing on every progress report means a stage that is genuinely alive
+ * keeps its claim, while one that has wedged loses it and gets reclaimed.
+ */
+const LEASE_MS = 5 * 60_000;
+
 /** Run one claimed job to completion, recording progress and failure. */
 export async function runJob(store: Store, job: Job): Promise<Job> {
   const report = async (progress: number, message: string) => {
@@ -458,6 +467,8 @@ export async function runJob(store: Store, job: Job): Promise<Job> {
       progress: Math.min(0.99, Math.max(0, progress)),
       message,
     });
+    // A stage reporting progress is proof of life; push the deadline out.
+    await store.extendLease(job.id, LEASE_MS).catch(() => undefined);
   };
 
   try {
@@ -468,17 +479,38 @@ export async function runJob(store: Store, job: Job): Promise<Job> {
       message: 'Done',
       output,
       error: null,
+      leaseExpiresAt: null,
     });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
+    const canRetry = isRetryable(cause) && job.attempts < job.maxAttempts;
+
+    if (canRetry) {
+      const delay = backoffMs(job.attempts);
+      // The asset stays in its working state: from the user's point of view
+      // this piece is still being built, just more slowly.
+      return await store.updateJob(job.id, {
+        status: 'queued',
+        // Reset progress: the next attempt starts from the top of the stage,
+        // so leaving the old bar part-filled would misreport where it is.
+        progress: 0,
+        message: `Retrying in ${Math.round(delay / 1000)}s (attempt ${job.attempts + 1} of ${job.maxAttempts})`,
+        error: message,
+        leaseExpiresAt: null,
+        nextAttemptAt: new Date(Date.now() + delay).toISOString(),
+      });
+    }
+
+    // Out of attempts, or a failure that would fail identically next time.
     // Mark the asset failed too, otherwise the UI would spin forever.
     if (job.assetId) {
       await store.updateAsset(job.assetId, { status: 'failed' }).catch(() => undefined);
     }
     return await store.updateJob(job.id, {
       status: 'failed',
-      message: 'Failed',
+      message: job.attempts >= job.maxAttempts ? `Failed after ${job.attempts} attempts` : 'Failed',
       error: message,
+      leaseExpiresAt: null,
     });
   }
 }
@@ -488,6 +520,9 @@ export async function runJob(store: Store, job: Job): Promise<Job> {
  * while work is outstanding) and by the standalone worker script.
  */
 export async function drainJobs(store: Store, max = 10): Promise<number> {
+  // Sweep up anything a dead worker left claimed before taking new work.
+  await store.reclaimExpiredJobs().catch(() => 0);
+
   let processed = 0;
   while (processed < max) {
     const job = await store.claimNextJob();

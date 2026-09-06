@@ -109,6 +109,26 @@ retries from the stage that broke rather than from the photographs again. The ap
 own queue via `POST /api/jobs/tick` while work is outstanding; run `npm run worker` alongside
 for a standalone drainer. Claims are atomic, so several drainers can run at once.
 
+### When things go wrong
+
+Reconstruction is the longest stage and the one that calls a third party, so the queue is
+built to survive both a flaky vendor and a worker that dies mid-job.
+
+**Retries are opt-in per failure, not blanket.** A failure is retried only when it looks
+transient — a network error, a 5xx, a 429, an "overloaded" or "try again later" from a
+vendor. Anything deterministic (bad input, a missing row, a bug, a 401) fails immediately,
+because retrying it would just spend the same vendor credit three times for the same answer.
+Retries back off exponentially from 15s with jitter, so several jobs failing against one
+vendor do not come back in lockstep. The default is three attempts, per job.
+
+**Claims are leased.** A worker that dies cannot release its own claim, so every claim carries
+a five-minute deadline that the stage renews each time it reports progress. Whoever drains the
+queue next returns anything past its deadline to the queue — or fails it, if its attempts are
+spent. A stage that is genuinely alive keeps its claim; one that has wedged loses it.
+
+Note that with only the in-app drainer, a job backing off for 15s resumes when someone next
+has the app open. Run the standalone worker if that matters.
+
 ### Reviewing by pointing at things
 
 The studio has two modes. **Layout** stages the stand. **Comment** turns a click into a note
