@@ -109,6 +109,21 @@ function NodeInspector({ node }: { node: SceneNode }) {
 
       {loaded && <MaterialInspector node={node} />}
 
+      {loaded?.version.acceptedAt && (
+        <Panel title="Parts list">
+          <p className="text-[11px] leading-relaxed text-shell-400">
+            Every component in this accepted version, its bound material-library code and how many
+            instances it expands to.
+          </p>
+          <a
+            href={`/api/assets/${loaded.version.assetId}/versions/${loaded.version.id}/bom`}
+            className="mt-2.5 inline-flex items-center justify-center gap-1.5 rounded-md border border-shell-700 bg-shell-800 px-2.5 py-1 text-xs font-medium text-shell-100 transition hover:border-shell-600 hover:bg-shell-700"
+          >
+            Export BOM
+          </a>
+        </Panel>
+      )}
+
       {node.kind === 'asset' && node.assetVersionId && (
         <VersionComparePanel assetId={loaded?.version.assetId} nodeId={node.id} currentVersionId={node.assetVersionId} />
       )}
