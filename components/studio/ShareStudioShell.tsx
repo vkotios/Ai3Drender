@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 
 import { Badge, Button, Empty, Field, Panel, TextInput } from '@/components/ui';
 import { useStudio, type LoadedVersion } from '@/lib/studio/store';
-import type { Annotation, ClientApproval, Scene } from '@/lib/types';
+import type { Annotation, ClientApproval, Scene, ShareRole } from '@/lib/types';
 
 // Same client-only constraint as the authenticated studio - WebGL and drei's
 // HDRI loading do not exist on the server.
@@ -24,23 +24,39 @@ const CLIENT_NAME_KEY = 'ai3drender:share-client-name';
  * The client's read-only review view.
  *
  * This is a deliberately smaller shell than StudioShell, not a feature-flagged
- * version of it: there is no gizmo toolbar, no Outliner, no Save, no Export,
- * and studio mode is pinned to 'comment' for the lifetime of the page. Orbit
- * and inspect, plus the same anchored-note machinery the internal review loop
- * uses, is the entire surface area - nothing here can stage a piece or read
- * back an edited transform, because nothing here offers a way to make one.
+ * version of it: there is no gizmo toolbar, no Outliner, no Save, no Export.
+ * `role` decides the rest of the surface area:
+ *
+ * - 'commenter' pins studio mode to 'comment' for the lifetime of the page -
+ *   orbit and inspect, plus the same anchored-note machinery the internal
+ *   review loop uses, and the sign-off controls.
+ * - 'viewer' pins mode to 'view' instead, and this component renders none of
+ *   the note-pinning or approve/request-changes UI at all - not hidden behind
+ *   a disabled state, just never in the tree. Orbit/inspect is the entire
+ *   surface area for that tier.
+ *
+ * Either way, nothing here can stage a piece or read back an edited
+ * transform, because nothing here offers a way to make one - and for a
+ * 'viewer' link, the write API routes themselves (app/api/share/[token]/
+ * annotations and .../review) reject the request server-side regardless of
+ * what this component renders; the UI split below is not the security
+ * boundary.
  */
 export function ShareStudioShell({
   token,
   scene,
   versions,
   annotations,
+  role,
 }: {
   token: string;
   scene: Scene;
   versions: LoadedVersion[];
   annotations: Annotation[];
+  role: ShareRole;
 }) {
+  const canComment = role === 'commenter';
+
   const load = useStudio((s) => s.load);
   const setMode = useStudio((s) => s.setMode);
   const doc = useStudio((s) => s.doc);
@@ -65,8 +81,11 @@ export function ShareStudioShell({
     load(scene, versions, annotations);
     // Pinned for the whole session: this view never offers a way back to
     // 'layout' mode, which is what keeps the gizmo and staging tools out.
-    setMode('comment');
-  }, [load, setMode, scene, versions, annotations]);
+    // A 'viewer' link never enters 'comment' mode at all, so AssetNode's
+    // click handler falls through to a plain (harmless, unrendered) select
+    // instead of pinning - see lib/studio/store.ts's StudioMode doc.
+    setMode(canComment ? 'comment' : 'view');
+  }, [load, setMode, scene, versions, annotations, canComment]);
 
   useEffect(() => {
     try {
@@ -156,10 +175,10 @@ export function ShareStudioShell({
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="flex shrink-0 items-center gap-3 border-b border-shell-800 bg-shell-900 px-4 py-2.5">
-        <Badge tone="neutral">Client review</Badge>
+        <Badge tone="neutral">{canComment ? 'Client review' : 'View only'}</Badge>
         <h1 className="truncate text-sm font-medium text-shell-100">{scene.name}</h1>
-        <ApprovalBadge status={approval} />
-        {error && (
+        {canComment && <ApprovalBadge status={approval} />}
+        {canComment && error && (
           <span className="ml-auto truncate text-xs text-red-400" title={error}>
             {error}
           </span>
@@ -180,10 +199,11 @@ export function ShareStudioShell({
             />
           )}
           <p className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-shell-950/80 px-3 py-1 text-[11px] text-shell-400">
-            Drag to orbit · scroll to zoom · click a piece to leave a note
+            {canComment ? 'Drag to orbit · scroll to zoom · click a piece to leave a note' : 'Drag to orbit · scroll to zoom'}
           </p>
         </main>
 
+        {canComment && (
         <aside className="w-80 shrink-0 space-y-3 overflow-y-auto border-l border-shell-800 bg-shell-950 p-3">
           <Panel title="Your name">
             <TextInput
@@ -310,6 +330,7 @@ export function ShareStudioShell({
             </div>
           </Panel>
         </aside>
+        )}
       </div>
     </div>
   );
