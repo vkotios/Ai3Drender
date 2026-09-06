@@ -14,7 +14,7 @@ import {
   type ExportFormat,
 } from '@/lib/studio/export';
 import { useStudio, type LoadedVersion, type StudioMode } from '@/lib/studio/store';
-import type { Annotation, Project, Scene } from '@/lib/types';
+import type { Annotation, ClientApproval, Project, Scene } from '@/lib/types';
 
 import { AnnotationPanel } from './AnnotationPanel';
 import { Inspector } from './Inspector';
@@ -311,11 +311,7 @@ export function StudioShell({
         </Link>
         <span className="text-shell-700">/</span>
         <h1 className="text-sm font-medium text-shell-100">{scene.name}</h1>
-        {clientApproval !== 'pending' && (
-          <Badge tone={clientApproval === 'approved' ? 'good' : 'bad'}>
-            {clientApproval === 'approved' ? 'Client approved' : 'Client requested changes'}
-          </Badge>
-        )}
+        {clientApproval !== 'pending' && <ClientApprovalBadge status={clientApproval} />}
         {dirty && <Badge tone="warn">Unsaved</Badge>}
         {busy && <Badge tone="busy">{busy}…</Badge>}
         {error && (
@@ -554,4 +550,20 @@ function ExportMenu({
       )}
     </div>
   );
+}
+
+/** Owner-facing read of the client's verdict from the share view - see `ClientApproval`. */
+function ClientApprovalBadge({ status }: { status: ClientApproval }) {
+  switch (status) {
+    case 'approved':
+      return <Badge tone="good">Client approved</Badge>;
+    case 'approved_with_changes':
+      return <Badge tone="warn">Client approved, with changes</Badge>;
+    case 'changes_requested':
+      return <Badge tone="bad">Client requested changes</Badge>;
+    case 'not_relevant':
+      return <Badge tone="neutral">Client: not relevant</Badge>;
+    default:
+      return null;
+  }
 }

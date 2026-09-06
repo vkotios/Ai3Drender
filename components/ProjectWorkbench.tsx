@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AssetThumbnail } from '@/components/AssetThumbnail';
+import { ConfidenceBadge } from '@/components/ConfidenceBadge';
 import { Badge, Button, Empty, Field, Panel, TextInput } from '@/components/ui';
 import type {
   AssetStatus,
@@ -466,6 +467,7 @@ function AssetCard({
               </span>
               <Badge tone={STATUS_TONE[asset.status]}>{asset.status.replace(/_/g, ' ')}</Badge>
               {currentVersion?.acceptedAt && <Badge tone="good">accepted</Badge>}
+              {currentVersion && <ConfidenceBadge spec={currentVersion.spec} />}
             </div>
             {currentVersion && (
               <p className="mt-1 text-xs text-shell-400">

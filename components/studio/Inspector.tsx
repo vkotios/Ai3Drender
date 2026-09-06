@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
+import { ConfidenceBadge } from '@/components/ConfidenceBadge';
 import { Badge, Field, Panel, Slider, TextInput } from '@/components/ui';
 import { orphanedOverrideKeys } from '@/lib/scene/materialOverrides';
 import { BOOTH_PRESETS, PROP_DEFINITIONS, getPreset } from '@/lib/scene/presets';
@@ -36,12 +37,15 @@ function NodeInspector({ node }: { node: SceneNode }) {
       <Panel
         title="Selection"
         actions={
-          <button
-            onClick={() => removeNode(node.id)}
-            className="text-[11px] text-red-400 hover:text-red-300"
-          >
-            Remove
-          </button>
+          <div className="flex items-center gap-2">
+            {node.kind === 'asset' && loaded && <ConfidenceBadge spec={loaded.version.spec} />}
+            <button
+              onClick={() => removeNode(node.id)}
+              className="text-[11px] text-red-400 hover:text-red-300"
+            >
+              Remove
+            </button>
+          </div>
         }
       >
         <Field label="Name">
