@@ -6,11 +6,26 @@ export async function GET(_request: Request, { params }: Params) {
   const { projectId } = await params;
   return withProject(projectId, async ({ store }, project) => {
     const assets = await store.listAssets(project.id);
-    // The studio needs the current version inline to render anything.
+    // The studio needs the current version inline to render anything; the
+    // workbench also wants a mesh/preview URL so it can show a thumbnail.
     const versions = await Promise.all(
       assets.map((a) => (a.currentVersionId ? store.getAssetVersion(a.currentVersionId) : null)),
     );
-    return json(assets.map((asset, i) => ({ asset, currentVersion: versions[i] })));
+    return json(
+      await Promise.all(
+        assets.map(async (asset, i) => {
+          const currentVersion = versions[i];
+          return {
+            asset,
+            currentVersion,
+            meshUrl: currentVersion?.meshPath ? await store.blobUrl(currentVersion.meshPath) : null,
+            previewUrl: currentVersion?.previewPath
+              ? await store.blobUrl(currentVersion.previewPath)
+              : null,
+          };
+        }),
+      ),
+    );
   });
 }
 

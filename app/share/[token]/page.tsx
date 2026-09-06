@@ -37,7 +37,16 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
   for (const id of versionIds) {
     const version = await store.getAssetVersion(id);
     if (!version?.meshPath) continue;
-    versions.push({ version, meshUrl: await shareBlobUrl(store, token, version.meshPath) });
+    versions.push({
+      version,
+      meshUrl: await shareBlobUrl(store, token, version.meshPath),
+      // MeshUrlBoundary's refresh route is session-gated, which an anonymous
+      // share viewer never has - so there's nothing to schedule a proactive
+      // refresh through here. A share link that outlives the signed URL's
+      // TTL in Supabase mode needs a page reload; the token itself is
+      // reissued separately from Share panel.
+      meshUrlExpiresAt: null,
+    });
   }
 
   const assetIds = [...new Set(versions.map((v) => v.version.assetId))];

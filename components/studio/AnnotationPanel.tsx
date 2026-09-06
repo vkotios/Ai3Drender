@@ -32,6 +32,10 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
     Object.values(versions).find((v) => v.version.assetId === assetId)?.version.spec.displayName ??
     'Unknown piece';
 
+  /** Version number a note is currently pinned to, when that version is loaded. */
+  const currentVersionNumber = (annotation: Annotation) =>
+    versions[annotation.assetVersionId]?.version.versionNumber;
+
   const byAsset = new Map<string, Annotation[]>();
   for (const annotation of annotations) {
     if (annotation.status === 'dismissed') continue;
@@ -200,6 +204,11 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
                           {annotation.source === 'client' && (
                             <Badge tone="warn">Client{annotation.clientName ? ` · ${annotation.clientName}` : ''}</Badge>
                           )}
+                          {currentVersionNumber(annotation) !== annotation.originVersionNumber && (
+                            <span className="shrink-0 rounded-full bg-shell-800 px-1.5 py-0.5 text-[10px] text-shell-400">
+                              since v{annotation.originVersionNumber}
+                            </span>
+                          )}
                         </div>
                         <p className="mt-0.5 text-[11px] text-shell-400">
                           {annotation.componentName ?? annotation.partName ?? 'surface'} ·{' '}
@@ -209,6 +218,9 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
                           <p className="mt-0.5 text-[11px] text-emerald-400">
                             Applied in a newer version
                           </p>
+                        )}
+                        {annotation.staleNote && (
+                          <p className="mt-0.5 text-[11px] text-amber-400">{annotation.staleNote}</p>
                         )}
                       </div>
                       <button

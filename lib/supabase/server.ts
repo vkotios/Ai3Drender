@@ -49,7 +49,7 @@ export function createSupabaseAdminClient(): SupabaseClient {
  * signs in - so this is the anon key, unlike every other server client here.
  * What stands in for a session is the `x-scene-share-token` header: RLS reads
  * it back out via PostgREST's `request.headers` GUC (see
- * `active_share_scene_id()` in supabase/migrations/0004_client_review_links.sql)
+ * `active_share_scene_id()` in supabase/migrations/0008_client_review_links.sql)
  * and resolves it to a grant, the same way a JWT would resolve to a user.
  */
 export function createSupabaseShareClient(token: string): SupabaseClient {

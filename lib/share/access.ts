@@ -16,7 +16,7 @@ import { SupabaseStore } from '@/lib/db/supabase';
  * touching the resolved scene and what it references).
  *
  * Supabase mode instead defers to `active_share_scene_id()` (see
- * supabase/migrations/0004_client_review_links.sql): the anon+header client
+ * supabase/migrations/0008_client_review_links.sql): the anon+header client
  * this hands back is genuinely restricted by RLS to the shared scene and the
  * asset versions/annotations/mesh files it references, so a bug in a route
  * built on this module fails closed rather than open.
