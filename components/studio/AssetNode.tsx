@@ -5,6 +5,7 @@ import { useMemo, useRef } from 'react';
 import type { ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 
+import { resolveMaterialOverrideKey } from '@/lib/scene/materialOverrides';
 import type { Annotation, AssetVersion, SceneNode } from '@/lib/types';
 import type { PendingPin, StudioMode } from '@/lib/studio/store';
 
@@ -79,14 +80,18 @@ export function AssetNode({
     return { root, fit, offset };
   }, [scene, version.meshExtentMm, version.spec.dimensions]);
 
-  // Material overrides are keyed by the material name as it appears in the
-  // mesh, which is what the spec's material names map to for our own output.
+  // Material overrides are keyed by MaterialSpec.id, which survives a
+  // refinement renaming the material - the mesh's own material name does not.
+  // Resolve each mesh material back to the spec id that currently carries its
+  // name, and only fall back to the raw mesh name when nothing in the spec
+  // matches it (a vendor mesh whose material names we do not control).
   useMemo(() => {
     prepared.root.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       for (const material of materials) {
-        const override = node.materialOverrides[material.name];
+        const key = resolveMaterialOverrideKey(material.name, version.spec.materials);
+        const override = node.materialOverrides[key];
         if (!override || !(material instanceof THREE.MeshStandardMaterial)) continue;
         if (override.baseColorHex) material.color.set(override.baseColorHex);
         if (override.roughness !== undefined) material.roughness = override.roughness;
@@ -94,7 +99,7 @@ export function AssetNode({
         material.needsUpdate = true;
       }
     });
-  }, [prepared.root, node.materialOverrides]);
+  }, [prepared.root, node.materialOverrides, version.spec.materials]);
 
   /**
    * A click either selects the piece or pins a note to the exact spot.
