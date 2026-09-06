@@ -7,6 +7,7 @@ import {
   type ImageInput,
 } from '@/lib/ai/gemini';
 import { getMeshProvider } from '@/lib/ai/mesh';
+import { createPreviewMesh } from '@/lib/ai/mesh/simplify';
 import type { Store } from '@/lib/db';
 import { env } from '@/lib/env';
 import { anchorWithinBounds, describeAnchor, formatAnnotationForPrompt, resolveComponent } from '@/lib/scene/anchor';
@@ -107,6 +108,7 @@ async function runAnalyze(ctx: StageContext): Promise<Record<string, unknown>> {
       .filter((i) => i.role !== 'mood')
       .map<SynthesizedView>((i) => ({ angle: i.role, path: i.path, fromSource: true })),
     meshPath: null,
+    previewMeshPath: null,
     meshExtentMm: null,
     previewPath: null,
     provider: getMeshProvider().name,
@@ -207,15 +209,38 @@ async function runReconstruct(ctx: StageContext): Promise<Record<string, unknown
   const meshPath = key.mesh(asset.projectId, version.id);
   await store.putBlob(meshPath, result.glb, 'model/gltf-binary');
 
+  // A decimated copy for the real-time viewport (and, since it renders the
+  // same live scene, the in-browser path tracer) - see issue #47. Best
+  // effort: the Blender render worker and glTF/OBJ export never read this
+  // field, so a failed or no-op simplification just leaves the viewport on
+  // the full-detail mesh rather than failing the whole reconstruction.
+  await ctx.report(0.96, 'Simplifying preview mesh');
+  let previewMeshPath: string | null = null;
+  try {
+    const preview = await createPreviewMesh(result.glb, env.viewportMeshSimplifyRatio);
+    if (preview) {
+      previewMeshPath = key.previewMesh(asset.projectId, version.id);
+      await store.putBlob(previewMeshPath, preview.glb, 'model/gltf-binary');
+    }
+  } catch (cause) {
+    console.error(`[reconstruct] preview mesh simplification failed for version ${version.id}`, cause);
+  }
+
   await store.updateAssetVersion(version.id, {
     meshPath,
+    previewMeshPath,
     meshExtentMm: result.extentMm,
     provider: provider.name,
     providerJobId: result.providerJobId,
   });
   await store.updateAsset(asset.id, { status: 'ready', currentVersionId: version.id });
 
-  return { meshPath, provider: provider.name, bytes: result.glb.byteLength };
+  return {
+    meshPath,
+    previewMeshPath,
+    provider: provider.name,
+    bytes: result.glb.byteLength,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -288,6 +313,7 @@ async function runRefine(ctx: StageContext): Promise<Record<string, unknown>> {
     // Carry the parent's views over; they still depict the same piece.
     views: parent.views,
     meshPath: request.rebuildMesh ? null : parent.meshPath,
+    previewMeshPath: request.rebuildMesh ? null : parent.previewMeshPath,
     meshExtentMm: request.rebuildMesh ? null : parent.meshExtentMm,
     // A rebuilt mesh needs its own thumbnail; an unchanged one can reuse the parent's.
     previewPath: request.rebuildMesh ? null : parent.previewPath,

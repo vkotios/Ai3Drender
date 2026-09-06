@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 
 import { StudioShell } from '@/components/studio/StudioShell';
-import { blobUrlWithExpiry, requireProject } from '@/lib/db';
+import { blobUrlWithExpiry, requireProject, viewportMeshPath } from '@/lib/db';
 import { requireSession } from '@/lib/auth';
 import { hasGemini } from '@/lib/env';
 import { migrateSceneOnLoad } from '@/lib/scene/materialOverrides';
@@ -32,8 +32,10 @@ export default async function StudioPage({
   for (const asset of assets) {
     if (!asset.currentVersionId) continue;
     const version = await store.getAssetVersion(asset.currentVersionId);
-    if (!version?.meshPath) continue;
-    const { url, expiresAt } = await blobUrlWithExpiry(store, version.meshPath);
+    if (!version) continue;
+    const meshKey = viewportMeshPath(version);
+    if (!meshKey) continue;
+    const { url, expiresAt } = await blobUrlWithExpiry(store, meshKey);
     available.push({ version, meshUrl: url, meshUrlExpiresAt: expiresAt });
   }
 
@@ -49,8 +51,10 @@ export default async function StudioPage({
       continue;
     }
     const version = await store.getAssetVersion(id);
-    if (!version?.meshPath) continue;
-    const { url, expiresAt } = await blobUrlWithExpiry(store, version.meshPath);
+    if (!version) continue;
+    const meshKey = viewportMeshPath(version);
+    if (!meshKey) continue;
+    const { url, expiresAt } = await blobUrlWithExpiry(store, meshKey);
     versions.push({ version, meshUrl: url, meshUrlExpiresAt: expiresAt });
   }
 

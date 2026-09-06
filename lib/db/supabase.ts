@@ -96,6 +96,7 @@ const toVersion = (r: Row): AssetVersion => ({
   spec: r.spec,
   views: r.views ?? [],
   meshPath: r.mesh_path,
+  previewMeshPath: r.preview_mesh_path ?? null,
   meshExtentMm: r.mesh_extent_mm === null ? null : Number(r.mesh_extent_mm),
   previewPath: r.preview_path ?? null,
   provider: r.provider,
@@ -379,7 +380,7 @@ export class SupabaseStore implements Store {
     // just read them before the cascade takes the versions with the asset.
     const versions = await this.db
       .from('asset_versions')
-      .select('views, mesh_path')
+      .select('views, mesh_path, preview_mesh_path')
       .eq('asset_id', id);
 
     const { error } = await this.db.from('furniture_assets').delete().eq('id', id);
@@ -397,6 +398,7 @@ export class SupabaseStore implements Store {
         .filter((view) => !view.fromSource)
         .map((view) => view.path),
       ...(v.mesh_path ? [v.mesh_path as string] : []),
+      ...(v.preview_mesh_path ? [v.preview_mesh_path as string] : []),
     ]);
     await Promise.all(
       keys.map((key) =>
@@ -420,6 +422,7 @@ export class SupabaseStore implements Store {
         spec: input.spec,
         views: input.views,
         mesh_path: input.meshPath,
+        preview_mesh_path: input.previewMeshPath,
         mesh_extent_mm: input.meshExtentMm,
         preview_path: input.previewPath,
         provider: input.provider,
@@ -453,6 +456,7 @@ export class SupabaseStore implements Store {
     if (patch.spec !== undefined) update.spec = patch.spec;
     if (patch.views !== undefined) update.views = patch.views;
     if (patch.meshPath !== undefined) update.mesh_path = patch.meshPath;
+    if (patch.previewMeshPath !== undefined) update.preview_mesh_path = patch.previewMeshPath;
     if (patch.meshExtentMm !== undefined) update.mesh_extent_mm = patch.meshExtentMm;
     if (patch.previewPath !== undefined) update.preview_path = patch.previewPath;
     if (patch.provider !== undefined) update.provider = patch.provider;

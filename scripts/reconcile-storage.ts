@@ -28,7 +28,7 @@ async function livePathsLocal(): Promise<Set<string>> {
   const raw = await readFile(dbFile, 'utf8').catch(() => '{}');
   const db = JSON.parse(raw) as {
     sourceImages?: { path: string }[];
-    assetVersions?: { views?: ViewLike[]; meshPath?: string | null }[];
+    assetVersions?: { views?: ViewLike[]; meshPath?: string | null; previewMeshPath?: string | null }[];
     sceneRenders?: { path: string }[];
   };
 
@@ -37,6 +37,7 @@ async function livePathsLocal(): Promise<Set<string>> {
   for (const version of db.assetVersions ?? []) {
     for (const view of version.views ?? []) paths.add(view.path);
     if (version.meshPath) paths.add(version.meshPath);
+    if (version.previewMeshPath) paths.add(version.previewMeshPath);
   }
   for (const render of db.sceneRenders ?? []) paths.add(render.path);
   return paths;
@@ -51,7 +52,7 @@ async function livePathsSupabase(): Promise<Set<string>> {
   const admin = createSupabaseAdminClient();
   const [images, versions, renders] = await Promise.all([
     admin.from('source_images').select('path'),
-    admin.from('asset_versions').select('views, mesh_path'),
+    admin.from('asset_versions').select('views, mesh_path, preview_mesh_path'),
     admin.from('scene_renders').select('path'),
   ]);
   for (const [what, res] of [
@@ -67,6 +68,7 @@ async function livePathsSupabase(): Promise<Set<string>> {
   for (const row of versions.data ?? []) {
     for (const view of (row.views ?? []) as ViewLike[]) paths.add(view.path);
     if (row.mesh_path) paths.add(row.mesh_path as string);
+    if (row.preview_mesh_path) paths.add(row.preview_mesh_path as string);
   }
   for (const row of renders.data ?? []) paths.add(row.path as string);
   return paths;

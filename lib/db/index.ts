@@ -6,6 +6,10 @@ import { SupabaseStore } from './supabase';
 import { SIGNED_URL_TTL_SECONDS, type Store } from './store';
 
 export type { Store } from './store';
+// Pure (no server-only imports), so client components resolve which mesh key
+// to display - see components/studio/StudioCanvas.tsx - by importing it
+// straight from './store' instead of pulling this server-only module in.
+export { viewportMeshPath } from './store';
 
 export interface Viewer {
   id: string;

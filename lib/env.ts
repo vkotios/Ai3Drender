@@ -17,6 +17,13 @@
 const clean = (value: string | undefined): string | null =>
   value && value.trim() !== '' ? value.trim() : null;
 
+/** Clamp a ratio-shaped env var into (0, 1], falling back to `fallback` when unset or unparsable. */
+const cleanRatio = (value: string | undefined, fallback: number): number => {
+  const parsed = Number(clean(value));
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(1, parsed);
+};
+
 export const env = {
   supabaseUrl: clean(process.env.NEXT_PUBLIC_SUPABASE_URL),
   supabaseAnonKey: clean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
@@ -40,6 +47,15 @@ export const env = {
   blenderTimeoutMs: Number(clean(process.env.BLENDER_TIMEOUT_MS)) || 20 * 60_000,
   /** 'CPU' everywhere by default; set 'GPU' on a worker with a configured Cycles device. */
   blenderDevice: (clean(process.env.BLENDER_DEVICE) ?? 'CPU').toUpperCase(),
+
+  /**
+   * Target ratio (0-1) of vertices the viewport preview mesh keeps, passed to
+   * `@gltf-transform/functions`'s `simplify` at `reconstruct` time - see
+   * `lib/ai/mesh/simplify.ts`. 0.5 halves the vertex budget by default; the
+   * full-detail mesh reconstruct also wrote is what the Blender render worker
+   * and glTF/OBJ export keep using regardless of this setting.
+   */
+  viewportMeshSimplifyRatio: cleanRatio(process.env.VIEWPORT_MESH_SIMPLIFY_RATIO, 0.5),
 
   // Lets a scheduled trigger (Vercel Cron, or any external cron service) call
   // POST /api/jobs/tick without a signed-in session. Unset => that route only

@@ -6,7 +6,7 @@ import type { ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 
 import { baseName } from '@/lib/scene/anchor';
-import { resolveMaterialOverrideKey } from '@/lib/scene/materialOverrides';
+import { applyMaterialOverrides } from '@/lib/studio/applyMaterialOverrides';
 import type { Annotation, AssetVersion, SceneNode } from '@/lib/types';
 import { useStudio, type PendingPin, type StudioMode } from '@/lib/studio/store';
 
@@ -108,24 +108,29 @@ function AssetMesh({
 
   // Material overrides are keyed by MaterialSpec.id, which survives a
   // refinement renaming the material - the mesh's own material name does not.
-  // Resolve each mesh material back to the spec id that currently carries its
-  // name, and only fall back to the raw mesh name when nothing in the spec
-  // matches it (a vendor mesh whose material names we do not control).
+  // resolveMaterialOverrideKey (inside applyMaterialOverrides) resolves each
+  // mesh material back to the spec id that currently carries its name, and
+  // only falls back to the raw mesh name when nothing in the spec matches it
+  // (a vendor mesh whose material names we do not control).
   useMemo(() => {
-    prepared.root.traverse((child) => {
-      if (!(child instanceof THREE.Mesh)) return;
-      const materials = Array.isArray(child.material) ? child.material : [child.material];
-      for (const material of materials) {
-        const key = resolveMaterialOverrideKey(material.name, version.spec.materials);
-        const override = node.materialOverrides[key];
-        if (!override || !(material instanceof THREE.MeshStandardMaterial)) continue;
-        if (override.baseColorHex) material.color.set(override.baseColorHex);
-        if (override.roughness !== undefined) material.roughness = override.roughness;
-        if (override.metalness !== undefined) material.metalness = override.metalness;
-        material.needsUpdate = true;
-      }
-    });
+    applyMaterialOverrides(prepared.root, node.materialOverrides, version.spec.materials);
   }, [prepared.root, node.materialOverrides, version.spec.materials]);
+
+  // When the viewport is showing the decimated preview mesh, tag the wrapper
+  // that carries its fit/offset with enough to find and reload the
+  // full-detail one at export time (lib/studio/export.ts) - the glTF/OBJ
+  // export must never ship the preview mesh (issue #47). Null whenever there
+  // is nothing to swap: no preview in play, or reconstruction hasn't stored
+  // a full mesh at all (shouldn't happen once a version is ready, but this
+  // component has no reason to assume it).
+  const exportUserData = useMemo(
+    () => ({
+      fullMeshPath: version.previewMeshPath && version.meshPath ? version.meshPath : null,
+      materialOverrides: node.materialOverrides,
+      specMaterials: version.spec.materials,
+    }),
+    [version.previewMeshPath, version.meshPath, node.materialOverrides, version.spec.materials],
+  );
 
   /**
    * A click either selects the piece or pins a note - to the exact spot, or
@@ -219,7 +224,7 @@ function AssetMesh({
       onClick={handleClick}
       userData={{ nodeId: node.id, exportable: true }}
     >
-      <group position={prepared.offset} scale={prepared.fit}>
+      <group position={prepared.offset} scale={prepared.fit} userData={exportUserData}>
         <primitive object={prepared.root} />
       </group>
       {selected && mode === 'layout' && (

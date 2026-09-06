@@ -340,6 +340,7 @@ export class LocalStore implements Store {
     const keys = removedVersions.flatMap((v) => [
       ...v.views.filter((view) => !view.fromSource).map((view) => view.path),
       ...(v.meshPath ? [v.meshPath] : []),
+      ...(v.previewMeshPath ? [v.previewMeshPath] : []),
     ]);
     await Promise.all(
       keys.map((key) =>

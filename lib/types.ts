@@ -246,8 +246,22 @@ export interface AssetVersion {
   parentVersionId: Uuid | null;
   spec: FurnitureSpec;
   views: SynthesizedView[];
-  /** Storage key of the .glb. Null while reconstruction is still running. */
+  /** Storage key of the full-detail .glb. Null while reconstruction is still running. */
   meshPath: string | null;
+  /**
+   * Storage key of a decimated copy of `meshPath`, generated once at
+   * `reconstruct` time via `@gltf-transform/functions`'s `simplify` (see
+   * `lib/ai/mesh/simplify.ts`). Serves the real-time studio viewport (and, by
+   * extension, the in-browser path tracer, which renders the same live
+   * scene) so orbiting a dense vendor mesh stays responsive.
+   *
+   * Null when reconstruction hasn't produced a mesh yet, or when
+   * simplification failed or would not have reduced the mesh at all - the
+   * viewport falls back to `meshPath` in that case (see
+   * `components/studio/AssetNode.tsx`). The Blender render worker and
+   * glTF/OBJ export always use `meshPath`, never this field.
+   */
+  previewMeshPath: string | null;
   /** Longest-axis size of the raw mesh, used to scale it to real-world mm. */
   meshExtentMm: number | null;
   /** Storage key of a small captured PNG of the mesh, for list thumbnails. Null until one is captured. */

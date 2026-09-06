@@ -1,6 +1,6 @@
 import { apiError, json, withScene } from '@/lib/api';
 import { blobUrlWithExpiry } from '@/lib/db';
-import { SceneConflictError } from '@/lib/db/store';
+import { SceneConflictError, viewportMeshPath } from '@/lib/db/store';
 import { migrateSceneOnLoad } from '@/lib/scene/materialOverrides';
 import type { MaterialSpec, SceneDoc, Uuid } from '@/lib/types';
 
@@ -18,9 +18,10 @@ export async function GET(_request: Request, { params }: Params) {
     for (const id of versionIds) {
       const version = await store.getAssetVersion(id);
       if (!version) continue;
-      const resolved = version.meshPath
-        ? await blobUrlWithExpiry(store, version.meshPath)
-        : { url: null, expiresAt: null };
+      // Prefer the decimated preview mesh (issue #47), same as the initial
+      // page load - see lib/db/store.ts's viewportMeshPath.
+      const meshKey = viewportMeshPath(version);
+      const resolved = meshKey ? await blobUrlWithExpiry(store, meshKey) : { url: null, expiresAt: null };
       versions.push({ version, meshUrl: resolved.url, meshUrlExpiresAt: resolved.expiresAt });
     }
 

@@ -1,4 +1,5 @@
 import { apiError, json } from '@/lib/api';
+import { viewportMeshPath } from '@/lib/db/store';
 import { referencedAssetVersionIds, resolveShareToken } from '@/lib/share/access';
 import { shareBlobUrl } from '@/lib/share/blob';
 
@@ -21,9 +22,13 @@ export async function GET(_request: Request, { params }: Params) {
   for (const id of versionIds) {
     const version = await store.getAssetVersion(id);
     if (!version) continue;
+    // Prefer the decimated preview mesh (issue #47), same as the SSR share
+    // page and the authenticated studio routes - see lib/db/store.ts's
+    // viewportMeshPath.
+    const meshKey = viewportMeshPath(version);
     versions.push({
       version,
-      meshUrl: version.meshPath ? await shareBlobUrl(store, token, version.meshPath) : null,
+      meshUrl: meshKey ? await shareBlobUrl(store, token, meshKey) : null,
     });
   }
 
