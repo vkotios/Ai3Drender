@@ -28,6 +28,7 @@ function makeVersion(overrides: Partial<AssetVersion> = {}): AssetVersion {
     providerJobId: null,
     refinement: null,
     qaResult: null,
+    previewMeshPath: null,
     acceptedAt: null,
     createdAt: new Date().toISOString(),
     ...overrides,

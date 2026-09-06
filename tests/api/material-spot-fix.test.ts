@@ -98,6 +98,7 @@ async function createVersion(overrides: Partial<AssetVersion> = {}): Promise<Ass
     providerJobId: null,
     refinement: null,
     qaResult: null,
+    previewMeshPath: null,
     acceptedAt: null,
     ...overrides,
   });

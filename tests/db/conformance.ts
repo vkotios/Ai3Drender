@@ -196,6 +196,7 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       providerJobId: null,
       refinement: null,
       qaResult: null,
+      previewMeshPath: null,
       acceptedAt: null,
     });
 
