@@ -153,6 +153,21 @@ export const MATERIAL_CORRECTION_SCHEMA = {
   required: ['baseColorHex', 'roughness', 'metalness', 'sheen', 'clearcoat', 'finish'],
 } as const;
 
+/** See `resolvePartReference` in lib/ai/gemini.ts (issue #57). */
+export const PART_REFERENCE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    partName: {
+      type: 'STRING',
+      nullable: true,
+      description:
+        'The exact name of the matching component, copied verbatim from the "Named components" ' +
+        'list. Null when none of them plausibly match the description - do not invent a name.',
+    },
+  },
+  required: ['partName'],
+} as const;
+
 export const SCENE_DIRECTION_SCHEMA = {
   type: 'OBJECT',
   properties: {
