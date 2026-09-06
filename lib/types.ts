@@ -444,8 +444,22 @@ export type AnnotationStatus = 'open' | 'applied' | 'dismissed';
 export interface Annotation {
   id: Uuid;
   assetId: Uuid;
-  /** The version the note was made against. */
+  /**
+   * The version this note is currently pinned to. For a fresh note this is
+   * the version it was made against; a note still `open` when its version is
+   * superseded is re-pointed here at the newest version instead of going
+   * stale on the old one (see `refine` in lib/pipeline/index.ts).
+   */
   assetVersionId: Uuid;
+  /**
+   * The version this note was originally pinned on. Set once at creation and
+   * never touched again, so a note carried forward across several rounds can
+   * still read "since v1" even though `assetVersionId` has long since moved
+   * on. Paired with `originVersionNumber` so the UI can show that without an
+   * extra lookup for a version that may no longer be loaded.
+   */
+  originVersionId: Uuid;
+  originVersionNumber: number;
   /** Scene the note was taken in, for traceability. Null if made elsewhere. */
   sceneId: Uuid | null;
   /** Anchor in the asset's local space, metres. */
@@ -467,6 +481,16 @@ export interface Annotation {
   status: AnnotationStatus;
   /** The version created in response to this note. */
   resolvedByVersionId: Uuid | null;
+  /**
+   * Set only when this note was carried forward to a newer version and its
+   * anchor could not be cleanly reconciled with that version's spec - either
+   * the part it named no longer resolves to a component (renamed, merged or
+   * removed), or the anchor point now falls outside the piece's bounding box.
+   * Null otherwise, including for notes that have never been carried
+   * forward. The pin itself, its position and its `open` status are left
+   * alone; this is only a heads-up that its context may be stale.
+   */
+  staleNote: string | null;
   createdAt: IsoDate;
 }
 

@@ -139,6 +139,9 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       partName: null,
       componentName: null,
       componentRole: null,
+      originVersionId: version.id,
+      originVersionNumber: version.versionNumber,
+      staleNote: null,
       anchorDescription: 'centre, 0 mm above the floor',
       body: 'A note.',
     });

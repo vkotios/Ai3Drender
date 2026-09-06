@@ -116,6 +116,8 @@ const toAnnotation = (r: Row): Annotation => ({
   id: r.id,
   assetId: r.asset_id,
   assetVersionId: r.asset_version_id,
+  originVersionId: r.origin_version_id,
+  originVersionNumber: Number(r.origin_version_number),
   sceneId: r.scene_id,
   point: r.point,
   normal: r.normal,
@@ -126,6 +128,7 @@ const toAnnotation = (r: Row): Annotation => ({
   body: r.body,
   status: r.status,
   resolvedByVersionId: r.resolved_by_version_id,
+  staleNote: r.stale_note,
   createdAt: r.created_at,
 });
 
@@ -649,6 +652,8 @@ export class SupabaseStore implements Store {
       .insert({
         asset_id: input.assetId,
         asset_version_id: input.assetVersionId,
+        origin_version_id: input.originVersionId,
+        origin_version_number: input.originVersionNumber,
         scene_id: input.sceneId,
         point: input.point,
         normal: input.normal,
@@ -657,6 +662,7 @@ export class SupabaseStore implements Store {
         component_role: input.componentRole,
         anchor_description: input.anchorDescription,
         body: input.body,
+        stale_note: input.staleNote,
       })
       .select()
       .single();
@@ -684,6 +690,13 @@ export class SupabaseStore implements Store {
     if (patch.resolvedByVersionId !== undefined) {
       update.resolved_by_version_id = patch.resolvedByVersionId;
     }
+    // Carrying a note forward re-points it at the new version and refreshes
+    // everything derived from that version's spec.
+    if (patch.assetVersionId !== undefined) update.asset_version_id = patch.assetVersionId;
+    if (patch.componentName !== undefined) update.component_name = patch.componentName;
+    if (patch.componentRole !== undefined) update.component_role = patch.componentRole;
+    if (patch.anchorDescription !== undefined) update.anchor_description = patch.anchorDescription;
+    if (patch.staleNote !== undefined) update.stale_note = patch.staleNote;
     const res = await this.db.from('annotations').update(update).eq('id', id).select().single();
     return toAnnotation(unwrap('updateAnnotation', res));
   }
