@@ -57,6 +57,7 @@ export function StudioShell({
   const markSaved = useStudio((s) => s.markSaved);
   const mode = useStudio((s) => s.mode);
   const setMode = useStudio((s) => s.setMode);
+  const selectionMode = useStudio((s) => s.selectionMode);
   const setAnnotations = useStudio((s) => s.setAnnotations);
 
   const [gizmoMode, setGizmoMode] = useState<GizmoMode>('translate');
@@ -352,7 +353,9 @@ export function StudioShell({
                   converged ? ' · converged' : ''
                 }`
               : mode === 'comment'
-                ? 'Click anywhere on a piece to pin a note there'
+                ? selectionMode === 'part'
+                  ? 'Click a piece to note the whole part it belongs to · hold Shift for one exact point'
+                  : 'Click anywhere on a piece to pin a note there · hold Shift to note the whole part'
                 : 'Drag to orbit · scroll to zoom · click a piece to select it'}
           </p>
         </main>

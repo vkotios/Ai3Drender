@@ -4,7 +4,7 @@ import { useState } from 'react';
 
 import { Badge, Button, Empty, Panel, TextInput } from '@/components/ui';
 import { useStudio } from '@/lib/studio/store';
-import type { Annotation } from '@/lib/types';
+import type { Annotation, SelectionKind } from '@/lib/types';
 
 /**
  * The review loop: pin a note to a spot on a piece, then hand the open notes
@@ -15,6 +15,8 @@ import type { Annotation } from '@/lib/types';
  */
 export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onChanged: () => void }) {
   const mode = useStudio((s) => s.mode);
+  const selectionMode = useStudio((s) => s.selectionMode);
+  const setSelectionMode = useStudio((s) => s.setSelectionMode);
   const annotations = useStudio((s) => s.annotations);
   const versions = useStudio((s) => s.versions);
   const pendingPin = useStudio((s) => s.pendingPin);
@@ -51,6 +53,8 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
           point: pendingPin.point,
           normal: pendingPin.normal,
           partName: pendingPin.partName,
+          selectionKind: pendingPin.selectionKind,
+          instanceCount: pendingPin.instanceCount,
           assetVersionId: pendingPin.assetVersionId,
           sceneId,
         }),
@@ -120,16 +124,31 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
       {pendingPin ? (
         <Panel title="New note">
           <p className="mb-2 text-[11px] text-shell-400">
-            Pinned to{' '}
-            <span className="text-shell-100">{pendingPin.partName ?? 'this surface'}</span> on{' '}
-            {pieceName(pendingPin.assetId)}.
+            {pendingPin.selectionKind === 'part' ? (
+              <>
+                Selected the whole{' '}
+                <span className="text-shell-100">{pendingPin.partName ?? 'part'}</span>
+                {pendingPin.instanceCount > 1 ? ` (all ${pendingPin.instanceCount} instances)` : ''}{' '}
+                on {pieceName(pendingPin.assetId)}.
+              </>
+            ) : (
+              <>
+                Pinned to{' '}
+                <span className="text-shell-100">{pendingPin.partName ?? 'this surface'}</span> on{' '}
+                {pieceName(pendingPin.assetId)}.
+              </>
+            )}
           </p>
           <TextInput
             autoFocus
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && savePin()}
-            placeholder="Slim this leg to 40mm square"
+            placeholder={
+              pendingPin.selectionKind === 'part'
+                ? 'Slim all of these down to 40mm square'
+                : 'Slim this leg to 40mm square'
+            }
           />
           <div className="mt-2 flex gap-1.5">
             <Button size="sm" variant="primary" onClick={savePin} disabled={busy || !draft.trim()}>
@@ -149,9 +168,34 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
         </Panel>
       ) : (
         <Panel title="Comment mode">
-          <p className="text-xs leading-relaxed text-shell-400">
-            Click anywhere on a piece to pin a note there. The note records which part it landed on
-            and where, so the model knows exactly what you mean.
+          <p className="mb-2.5 text-xs leading-relaxed text-shell-400">
+            Click a piece to pin a note there. A note records which part it landed on and where,
+            so the model knows exactly what you mean.
+          </p>
+          <p className="mb-1.5 text-[11px] font-medium text-shell-300">Clicking selects</p>
+          <div className="flex rounded-md border border-shell-700 p-0.5">
+            {(
+              [
+                { value: 'point', label: 'This point' },
+                { value: 'part', label: 'Whole part' },
+              ] as { value: SelectionKind; label: string }[]
+            ).map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => setSelectionMode(value)}
+                className={`flex-1 rounded px-2 py-1 text-[11px] transition ${
+                  selectionMode === value
+                    ? 'bg-shell-700 text-shell-100'
+                    : 'text-shell-400 hover:text-shell-100'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1.5 text-[11px] text-shell-500">
+            Hold <span className="text-shell-300">Shift</span> while clicking to use the other one
+            just this once.
           </p>
         </Panel>
       )}
@@ -199,6 +243,12 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
                         <p className="mt-0.5 text-[11px] text-shell-400">
                           {annotation.componentName ?? annotation.partName ?? 'surface'} ·{' '}
                           {annotation.anchorDescription}
+                          {annotation.selectionKind === 'part' && (
+                            <>
+                              {' '}
+                              <Badge tone="neutral">Part</Badge>
+                            </>
+                          )}
                         </p>
                         {annotation.status === 'applied' && (
                           <p className="mt-0.5 text-[11px] text-emerald-400">

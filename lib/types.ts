@@ -360,6 +360,12 @@ export interface Job {
 export type AnnotationStatus = 'open' | 'applied' | 'dismissed';
 
 /**
+ * 'point' anchors a note to one clicked spot; 'part' covers every numbered
+ * instance of a named part at once (e.g. all four `Legs`), taken as a unit.
+ */
+export type SelectionKind = 'point' | 'part';
+
+/**
  * A note pinned to a point on a piece's geometry.
  *
  * This is the review loop a workshop actually runs on: someone points at the
@@ -378,19 +384,32 @@ export interface Annotation {
   assetVersionId: Uuid;
   /** Scene the note was taken in, for traceability. Null if made elsewhere. */
   sceneId: Uuid | null;
-  /** Anchor in the asset's local space, metres. */
+  /**
+   * 'point' pins one clicked spot; 'part' covers every numbered instance of
+   * the named part at once (e.g. all four `Legs`), taken as a single unit.
+   */
+  selectionKind: SelectionKind;
+  /**
+   * Anchor in the asset's local space, metres. For a 'part' selection this is
+   * the centroid of every matching instance, not a spot the user picked - it
+   * exists to place the marker, not to describe the note's location.
+   */
   point: Vec3;
   /** Surface normal at the anchor, for orienting the marker. */
   normal: Vec3;
-  /** Mesh part under the cursor, e.g. "Legs 3". Null on unnamed vendor meshes. */
+  /**
+   * Mesh part under the cursor, e.g. "Legs 3", or the base part name ("Legs")
+   * for a whole-part selection. Null on unnamed vendor meshes.
+   */
   partName: string | null;
   /** Spec component the part maps to, when it can be resolved. */
   componentName: string | null;
   componentRole: string | null;
   /**
-   * Where the note sits on the piece in plain language, e.g.
-   * "front-left, 180 mm above the floor". Always derivable, even when the
-   * mesh carries no part names, so the model is never left without location.
+   * Where the note applies, in plain language - either a position, e.g.
+   * "front-left, 180 mm above the floor", or, for a whole-part selection,
+   * "as a whole, all 4 instances". Always derivable, so the model is never
+   * left without location.
    */
   anchorDescription: string;
   body: string;

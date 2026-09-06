@@ -2,7 +2,15 @@
 
 import { create } from 'zustand';
 
-import type { Annotation, AssetVersion, Scene, SceneDoc, SceneNode, Uuid } from '@/lib/types';
+import type {
+  Annotation,
+  AssetVersion,
+  Scene,
+  SceneDoc,
+  SceneNode,
+  SelectionKind,
+  Uuid,
+} from '@/lib/types';
 
 export interface LoadedVersion {
   version: AssetVersion;
@@ -23,10 +31,18 @@ export interface PendingPin {
   nodeId: string;
   assetId: Uuid;
   assetVersionId: Uuid;
-  /** Asset-local space: metres, origin on the floor at the footprint centre. */
+  /**
+   * Asset-local space: metres, origin on the floor at the footprint centre.
+   * For a 'part' selection this is the centroid of every matching instance,
+   * used only to place the marker - the note itself is about the whole part.
+   */
   point: { x: number; y: number; z: number };
   normal: { x: number; y: number; z: number };
+  /** Base part name for a 'part' selection; the exact mesh part for 'point'. */
   partName: string | null;
+  selectionKind: SelectionKind;
+  /** Instances the selection covers. Always 1 for 'point'. */
+  instanceCount: number;
 }
 
 interface StudioState {
@@ -36,6 +52,12 @@ interface StudioState {
   versions: Record<Uuid, LoadedVersion>;
   selectedId: string | null;
   mode: StudioMode;
+  /**
+   * What a plain click in comment mode pins: one point, or the whole named
+   * part under the cursor. Holding Shift while clicking flips this for that
+   * one click only.
+   */
+  selectionMode: SelectionKind;
   /** Notes on every piece staged in this scene. */
   annotations: Annotation[];
   pendingPin: PendingPin | null;
@@ -47,6 +69,7 @@ interface StudioState {
 
   load(scene: Scene, versions: LoadedVersion[], annotations?: Annotation[]): void;
   setMode(mode: StudioMode): void;
+  setSelectionMode(mode: SelectionKind): void;
   setPendingPin(pin: PendingPin | null): void;
   selectAnnotation(id: string | null): void;
   setAnnotations(annotations: Annotation[]): void;
@@ -68,6 +91,7 @@ export const useStudio = create<StudioState>((set) => ({
   versions: {},
   selectedId: null,
   mode: 'layout',
+  selectionMode: 'point',
   annotations: [],
   pendingPin: null,
   selectedAnnotationId: null,
@@ -89,6 +113,7 @@ export const useStudio = create<StudioState>((set) => ({
   // Leaving comment mode drops a half-written pin rather than letting it
   // reappear unexpectedly the next time the mode is entered.
   setMode: (mode) => set({ mode, pendingPin: null }),
+  setSelectionMode: (selectionMode) => set({ selectionMode }),
   setPendingPin: (pendingPin) => set({ pendingPin }),
   selectAnnotation: (selectedAnnotationId) => set({ selectedAnnotationId }),
   setAnnotations: (annotations) => set({ annotations }),
