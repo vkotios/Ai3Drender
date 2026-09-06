@@ -64,6 +64,7 @@ export async function POST(request: Request, { params }: Params) {
       source: 'client',
       clientName,
       staleNote: null,
+      selectionKind: 'point',
     }),
     201,
   );

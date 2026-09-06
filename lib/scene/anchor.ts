@@ -9,7 +9,7 @@ import type { Dimensions3, FurnitureSpec, Vec3 } from '@/lib/types';
  */
 
 /** Strip the "3" from "Legs 3" - repeated parts are numbered on export. */
-function baseName(partName: string): string {
+export function baseName(partName: string): string {
   return partName.replace(/[\s_]\d+$/, '').trim();
 }
 
@@ -70,6 +70,18 @@ export function describeAnchor(point: Vec3, dimensions: Dimensions3): string {
 
   const heightMm = Math.round(point.y * 1000);
   return `${where}, ${heightMm} mm above the floor`;
+}
+
+/**
+ * Describe a whole-part selection in plain language, for a note that covers
+ * every instance of a named part rather than one clicked point.
+ *
+ * This is what keeps a "select the whole part" note in the same shape as a
+ * pinned point once it reaches the model: still a part name plus a short
+ * plain-language location, never a raw point or vertex set.
+ */
+export function describeWholePart(instanceCount: number): string {
+  return instanceCount > 1 ? `as a whole, all ${instanceCount} instances` : 'as a whole';
 }
 
 /**

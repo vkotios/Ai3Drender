@@ -137,6 +137,9 @@ const toAnnotation = (r: Row): Annotation => ({
   originVersionId: r.origin_version_id,
   originVersionNumber: Number(r.origin_version_number),
   sceneId: r.scene_id,
+  // Rows written before this column existed default to 'point' here too, so
+  // an old note still round-trips instead of failing to resolve a shape.
+  selectionKind: r.selection_kind ?? 'point',
   point: r.point,
   normal: r.normal,
   partName: r.part_name,
@@ -802,6 +805,7 @@ export class SupabaseStore implements Store {
         origin_version_id: input.originVersionId,
         origin_version_number: input.originVersionNumber,
         scene_id: input.sceneId,
+        selection_kind: input.selectionKind,
         point: input.point,
         normal: input.normal,
         part_name: input.partName,

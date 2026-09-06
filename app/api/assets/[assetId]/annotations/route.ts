@@ -1,6 +1,6 @@
 import { apiError, json, withAsset } from '@/lib/api';
-import { describeAnchor, resolveComponent } from '@/lib/scene/anchor';
-import type { AnnotationStatus, Vec3 } from '@/lib/types';
+import { describeAnchor, describeWholePart, resolveComponent } from '@/lib/scene/anchor';
+import type { AnnotationStatus, SelectionKind, Vec3 } from '@/lib/types';
 
 type Params = { params: Promise<{ assetId: string }> };
 
@@ -22,13 +22,18 @@ const isVec3 = (value: unknown): value is Vec3 =>
   value !== null &&
   ['x', 'y', 'z'].every((axis) => Number.isFinite((value as Record<string, unknown>)[axis]));
 
+const isSelectionKind = (value: unknown): value is SelectionKind =>
+  value === 'point' || value === 'part';
+
 /**
- * Pin a note to a point on the piece.
+ * Pin a note to a point on the piece, or to a whole named part taken as a unit.
  *
  * The client sends the anchor in the asset's local space plus whatever mesh
- * part it hit. The server resolves that to a spec component and a plain-language
- * location, so the stored note carries the context the model needs even if the
- * mesh is later replaced.
+ * part it hit (for a whole-part selection, the centroid of every matching
+ * instance and how many there are). The server resolves the part to a spec
+ * component and a plain-language location, so the stored note carries the
+ * context the model needs even if the mesh is later replaced - a component
+ * reference and a short description, never a raw point or vertex set.
  */
 export async function POST(request: Request, { params }: Params) {
   const { assetId } = await params;
@@ -38,12 +43,25 @@ export async function POST(request: Request, { params }: Params) {
       point?: unknown;
       normal?: unknown;
       partName?: string | null;
+      selectionKind?: unknown;
+      instanceCount?: unknown;
       assetVersionId?: string;
       sceneId?: string | null;
     };
 
     if (!body.body?.trim()) return apiError('A note cannot be empty');
     if (!isVec3(body.point)) return apiError('A valid anchor point is required');
+
+    const selectionKind: SelectionKind = isSelectionKind(body.selectionKind)
+      ? body.selectionKind
+      : 'point';
+    if (selectionKind === 'part' && !body.partName?.trim()) {
+      return apiError('A whole-part selection needs a part name');
+    }
+    const instanceCount =
+      typeof body.instanceCount === 'number' && Number.isFinite(body.instanceCount)
+        ? Math.max(1, Math.round(body.instanceCount))
+        : 1;
 
     const versionId = body.assetVersionId ?? asset.currentVersionId;
     if (!versionId) return apiError('This piece has no version to annotate');
@@ -62,12 +80,16 @@ export async function POST(request: Request, { params }: Params) {
         originVersionId: version.id,
         originVersionNumber: version.versionNumber,
         sceneId: body.sceneId ?? null,
+        selectionKind,
         point: body.point,
         normal: isVec3(body.normal) ? body.normal : { x: 0, y: 1, z: 0 },
         partName: body.partName ?? null,
         componentName,
         componentRole,
-        anchorDescription: describeAnchor(body.point, version.spec.dimensions),
+        anchorDescription:
+          selectionKind === 'part'
+            ? describeWholePart(instanceCount)
+            : describeAnchor(body.point, version.spec.dimensions),
         body: body.body.trim(),
         source: 'internal',
         clientName: null,

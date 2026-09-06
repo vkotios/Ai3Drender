@@ -139,6 +139,7 @@ describe('pipeline: refine', () => {
       staleNote: null,
       source: 'internal',
       clientName: null,
+      selectionKind: 'point',
       anchorDescription: 'front-left, 300 mm above the floor',
       body: 'Make these legs slimmer.',
     });
@@ -209,6 +210,7 @@ describe('pipeline: refine', () => {
       staleNote: null,
       source: 'internal',
       clientName: null,
+      selectionKind: 'point',
       anchorDescription: 'centre, 0 mm above the floor',
       body: 'Unrelated note.',
     });

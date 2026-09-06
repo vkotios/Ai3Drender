@@ -144,6 +144,7 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       staleNote: null,
       source: 'internal',
       clientName: null,
+      selectionKind: 'point',
       anchorDescription: 'centre, 0 mm above the floor',
       body: 'A note.',
     });
