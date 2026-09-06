@@ -164,6 +164,7 @@ const toShareLink = (r: Row): SceneShareLink => ({
   expiresAt: r.expires_at,
   revokedAt: r.revoked_at,
   lastAccessedAt: r.last_accessed_at,
+  lastReminderSentAt: r.last_reminder_sent_at,
   createdAt: r.created_at,
 });
 
@@ -651,6 +652,27 @@ export class SupabaseStore implements Store {
       .update({ last_accessed_at: new Date().toISOString() })
       .eq('id', id);
     if (error) throw new Error(`touchShareLink: ${error.message}`);
+  }
+
+  async listActiveShareLinks(): Promise<SceneShareLink[]> {
+    // Called from the reminder sweep with the service-role client, so this
+    // deliberately reaches across every project rather than one owner's -
+    // there is no signed-in owner to scope it by, same as `getWorkerStore`'s
+    // other callers.
+    const res = await this.db
+      .from('scene_share_links')
+      .select('*')
+      .is('revoked_at', null)
+      .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`);
+    return unwrap('listActiveShareLinks', res).map(toShareLink);
+  }
+
+  async markShareLinkReminded(id: Uuid): Promise<void> {
+    const { error } = await this.db
+      .from('scene_share_links')
+      .update({ last_reminder_sent_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) throw new Error(`markShareLinkReminded: ${error.message}`);
   }
 
   /* Jobs ------------------------------------------------------------------- */

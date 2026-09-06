@@ -1,4 +1,5 @@
 import { apiError, json } from '@/lib/api';
+import { notifyReviewActivity } from '@/lib/notify/review-activity';
 import { resolveShareToken } from '@/lib/share/access';
 import type { ClientApproval } from '@/lib/types';
 
@@ -25,12 +26,21 @@ export async function POST(request: Request, { params }: Params) {
   const reviewerName = body.reviewerName?.trim();
   if (!reviewerName) return apiError('Your name is required');
 
-  return json(
-    await store.updateScene(scene.id, {
-      clientApproval: body.status,
-      clientApprovalAt: new Date().toISOString(),
-      clientApprovalName: reviewerName,
-      clientApprovalNote: body.note?.trim() || null,
-    }),
-  );
+  const updated = await store.updateScene(scene.id, {
+    clientApproval: body.status,
+    clientApprovalAt: new Date().toISOString(),
+    clientApprovalName: reviewerName,
+    clientApprovalNote: body.note?.trim() || null,
+  });
+
+  // Best-effort - see notifyReviewActivity's doc comment. Never blocks or
+  // fails the verdict itself, and no-ops instantly with no Slack/email configured.
+  await notifyReviewActivity(updated, {
+    kind: 'review',
+    clientName: reviewerName,
+    status: body.status,
+    note: updated.clientApprovalNote,
+  });
+
+  return json(updated);
 }
