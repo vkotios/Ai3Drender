@@ -4,6 +4,7 @@ import {
   offlineFurnitureSpec,
   offlineMaterialCorrection,
   offlineQaResult,
+  offlineResolvePartReference,
   offlineSceneDirection,
 } from '@/lib/ai/offline';
 import { makeMaterial } from '../fixtures';
@@ -155,5 +156,35 @@ describe('offlineQaResult', () => {
     expect(result.source).toBe('offline');
     expect(result.issues).toEqual([]);
     expect(result).toEqual(offlineQaResult()); // deterministic
+  });
+});
+
+describe('offlineResolvePartReference', () => {
+  const PARTS = [
+    { name: 'Legs', role: 'leg' },
+    { name: 'Seat', role: 'seat' },
+    { name: 'Backrest', role: 'backrest' },
+  ];
+
+  it('matches a part whose name shares a word with the query', () => {
+    expect(offlineResolvePartReference('the legs underneath', PARTS)).toBe('Legs');
+  });
+
+  it('matches a part by role even when the name shares no word with the query', () => {
+    const parts = [{ name: 'Carcass', role: 'frame' }, { name: 'Doors', role: 'panel' }];
+    expect(offlineResolvePartReference('the frame', parts)).toBe('Carcass');
+  });
+
+  it('returns null rather than guessing when nothing shares a word', () => {
+    expect(offlineResolvePartReference('the antigravity module', PARTS)).toBeNull();
+  });
+
+  it('returns null for an empty query or an empty part list', () => {
+    expect(offlineResolvePartReference('', PARTS)).toBeNull();
+    expect(offlineResolvePartReference('the legs', [])).toBeNull();
+  });
+
+  it('is case-insensitive', () => {
+    expect(offlineResolvePartReference('THE LEGS', PARTS)).toBe('Legs');
   });
 });

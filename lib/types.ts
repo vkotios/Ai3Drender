@@ -234,6 +234,35 @@ export interface RefinementRequest {
 }
 
 /**
+ * What a `rebake_part` job changed (issue #57): re-bakes ONE named part's
+ * material/texture directly into a new asset version's mesh, permanently -
+ * distinct from `MaterialSpec`'s spot-fix (issue #48, which only patches the
+ * spec's descriptive PBR values) and from `SceneNode.materialOverrides`
+ * (issue #7, a viewer-side override that never touches the stored mesh).
+ *
+ * Kept on the version for the same reason `refinement` is: so the version
+ * history is self-describing. Absent (or null) on every version not produced
+ * this way, including everything recorded before this field existed - treated
+ * the same as no rebake.
+ */
+export interface RebakePartRequest {
+  /** How the target part was addressed - an exact component/node name, or free text. */
+  target: string;
+  /** The spec component(s) `target` resolved to and whose `materialId` this rebake repointed. */
+  componentNames: string[];
+  /** Mesh node/primitive names in the new .glb that were actually repainted. */
+  meshPartNames: string[];
+  /** How the new material was sourced. */
+  materialSource: 'library' | 'instruction';
+  /** Library entry bound, when `materialSource === 'library'`. */
+  libraryEntryId: string | null;
+  /** Free-text correction, when `materialSource === 'instruction'`. */
+  instruction: string | null;
+  /** `materials[].id` (in the new version's spec) now bound to the rebaked part. */
+  materialId: string;
+}
+
+/**
  * Perceptual QA verdict for a reconstructed mesh: does it actually look like
  * the source photographs it was built from? A vision-model opinion, not a
  * structural check (gltf-transform's round-trip already covers that) - so
@@ -285,6 +314,8 @@ export interface AssetVersion {
   provider: string;
   providerJobId: string | null;
   refinement: RefinementRequest | null;
+  /** Set when a `rebake_part` job produced this version. See `RebakePartRequest`. */
+  rebakedPart?: RebakePartRequest | null;
   /**
    * Perceptual fidelity check against the source photos, run once after the
    * mesh is built. Null until it runs (or if it failed - see reconstruct's
@@ -480,7 +511,8 @@ export type JobKind =
   | 'refine'
   | 'direct_scene'
   | 'concept_render'
-  | 'render';
+  | 'render'
+  | 'rebake_part';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 

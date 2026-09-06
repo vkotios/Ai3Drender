@@ -7,11 +7,13 @@ import {
   offlineFurnitureSpec,
   offlineMaterialCorrection,
   offlineQaResult,
+  offlineResolvePartReference,
   offlineSceneDirection,
 } from './offline';
 import {
   FURNITURE_SPEC_SCHEMA,
   MATERIAL_CORRECTION_SCHEMA,
+  PART_REFERENCE_SCHEMA,
   QA_RESULT_SCHEMA,
   SCENE_DIRECTION_SCHEMA,
 } from './schemas';
@@ -595,6 +597,61 @@ ${instruction}
     finish: parsed.finish || material.finish,
     notes: `Spot-fixed via Gemini per instruction: "${instruction.trim()}".`,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 6b. Resolve a free-text part reference against the piece's named parts     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Match a free-text description of one part of a piece ("the legs", "the
+ * cushion on top") to one of its named spec components, for a `rebake_part`
+ * request whose target didn't match a component/node name exactly - see
+ * `resolveComponent` in lib/scene/anchor.ts, which this is the AI-assisted
+ * fallback for (issue #57).
+ *
+ * Text-only, not vision: the component list alone is almost always enough to
+ * disambiguate ("the legs" is unambiguous against ["Legs", "Seat",
+ * "Backrest"]), so this stays as light a call as `correctMaterial` rather
+ * than paying for an image round-trip. Returns null - never a guess - when
+ * the model itself says nothing matches, or names something not in the list.
+ */
+export async function resolvePartReference(
+  query: string,
+  parts: { name: string; role: string }[],
+): Promise<string | null> {
+  if (parts.length === 0) return null;
+  if (!hasGemini) return offlineResolvePartReference(query, parts);
+
+  const response = await ai().models.generateContent({
+    model: env.geminiTextModel,
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `
+A user described one part of a furniture piece in their own words. Match their description to
+exactly one of the piece's named components below, or say none of them plausibly match.
+
+Named components:
+${parts.map((p) => `- "${p.name}" (role: ${p.role})`).join('\n')}
+
+User's description: "${query}"
+`.trim(),
+          },
+        ],
+      },
+    ],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: PART_REFERENCE_SCHEMA as never,
+      temperature: 0,
+    },
+  });
+
+  const parsed = parseJson<{ partName: string | null }>(response.text ?? '', 'resolvePartReference');
+  return parts.find((p) => p.name === parsed.partName)?.name ?? null;
 }
 
 /* -------------------------------------------------------------------------- */
