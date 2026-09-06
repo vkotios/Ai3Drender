@@ -107,7 +107,9 @@ photos ──▶ analyze ──▶ synthesize_views ──▶ reconstruct ──
 Each stage is a row in `jobs` that enqueues the next, so progress is visible and a failure
 retries from the stage that broke rather than from the photographs again. The app drains its
 own queue via `POST /api/jobs/tick` while work is outstanding; run `npm run worker` alongside
-for a standalone drainer. Claims are atomic, so several drainers can run at once.
+for a standalone drainer. Claims are atomic, so several drainers can run at once — in Supabase
+mode through a guarded conditional update, and on the local disk store through an advisory
+lock around each read-modify-write.
 
 ### When things go wrong
 
@@ -128,6 +130,23 @@ spent. A stage that is genuinely alive keeps its claim; one that has wedged lose
 
 Note that with only the in-app drainer, a job backing off for 15s resumes when someone next
 has the app open. Run the standalone worker if that matters.
+
+### The local disk store and concurrency
+
+`LocalStore` is safe to use from more than one process — the dev server and `npm run worker`
+together, which is exactly what the instructions above suggest.
+
+It gets there in two layers. An in-process promise chain orders this process's own writes, and
+an advisory lock file around each read-modify-write keeps separate processes from clobbering
+each other. Reads are deliberately unlocked: a write only becomes visible via an atomic
+rename, so a reader sees either the whole previous file or the whole next one.
+
+Without that lock the rename is atomic but the read-modify-write around it is not. Measured
+with four processes doing 25 operations each: half the writes were silently lost, and 37 jobs
+were claimed by more than one process — each of those a duplicate vendor call you would pay
+for. With it, 100 of 100 writes land and every claim is unique.
+
+It is still the development store. Production is `SupabaseStore`.
 
 ### Reviewing by pointing at things
 

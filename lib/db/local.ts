@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 
+import lockfile from 'proper-lockfile';
+
 import type {
   Annotation,
   AnnotationStatus,
@@ -67,12 +69,32 @@ const now = () => new Date().toISOString();
 const DEFAULT_LEASE_MS = 5 * 60_000;
 
 /**
+ * How long before a lock held by a vanished process is treated as abandoned.
+ * Long enough to cover any single write, short enough that a killed worker
+ * does not wedge the dev server for long.
+ */
+const LOCK_STALE_MS = 10_000;
+
+/**
  * Development store. Everything lives in one JSON file plus a blob directory.
  *
- * Writes are serialised through a single in-process promise chain and land via
- * a temp-file rename, so a crash mid-write cannot leave a truncated database.
- * That is sufficient for a single dev server and explicitly not for production
- * - use `SupabaseStore` there.
+ * Concurrency is handled in two layers, because both kinds actually happen:
+ * the README suggests running `npm run worker` alongside the dev server, which
+ * is two processes on one file.
+ *
+ * 1. An in-process promise chain keeps this process's own writes ordered and
+ *    avoids fighting itself for the file lock.
+ * 2. An advisory lock file around each read-modify-write keeps SEPARATE
+ *    processes from clobbering each other. Without it the rename is atomic but
+ *    the read-modify-write around it is not, so two drainers could read the
+ *    same state, and a job could be claimed twice.
+ *
+ * Reads are deliberately not locked. A write only ever becomes visible via
+ * rename, so a reader sees either the whole previous file or the whole next
+ * one - never a torn mixture.
+ *
+ * This is still the development store: it is fine for a dev server plus a
+ * worker, and not intended for production - use `SupabaseStore` there.
  */
 export class LocalStore implements Store {
   readonly kind = 'local' as const;
@@ -88,17 +110,45 @@ export class LocalStore implements Store {
     }
   }
 
+  /**
+   * Take the cross-process advisory lock for the duration of `fn`.
+   *
+   * `realpath: false` because the database file may not exist yet on a first
+   * run. `stale` bounds how long a lock held by a process that died can block
+   * everyone else; proper-lockfile treats an older lock as abandoned and
+   * takes it over.
+   */
+  private async withFileLock<T>(fn: () => Promise<T>): Promise<T> {
+    await mkdir(ROOT, { recursive: true });
+    const release = await lockfile.lock(DB_FILE, {
+      realpath: false,
+      stale: LOCK_STALE_MS,
+      // Roughly five seconds of patience, which comfortably covers another
+      // process writing a database of this size.
+      retries: { retries: 40, factor: 1.4, minTimeout: 20, maxTimeout: 400 },
+    });
+    try {
+      return await fn();
+    } finally {
+      await release();
+    }
+  }
+
   /** Serialised read-modify-write. All mutations go through here. */
   private mutate<T>(fn: (db: Db) => T | Promise<T>): Promise<T> {
-    const next = this.queue.then(async () => {
-      const db = await this.read();
-      const result = await fn(db);
-      await mkdir(ROOT, { recursive: true });
-      const tmp = `${DB_FILE}.${process.pid}.tmp`;
-      await writeFile(tmp, JSON.stringify(db, null, 2), 'utf8');
-      await rename(tmp, DB_FILE);
-      return result;
-    });
+    const next = this.queue.then(() =>
+      this.withFileLock(async () => {
+        // Read inside the lock: anything read before taking it may already be
+        // stale, which is exactly the lost-update this guards against.
+        const db = await this.read();
+        const result = await fn(db);
+        // The pid keeps two processes from colliding on the same temp path.
+        const tmp = `${DB_FILE}.${process.pid}.tmp`;
+        await writeFile(tmp, JSON.stringify(db, null, 2), 'utf8');
+        await rename(tmp, DB_FILE);
+        return result;
+      }),
+    );
     // Keep the chain alive even when a caller's callback throws.
     this.queue = next.catch(() => undefined);
     return next;
