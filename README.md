@@ -302,7 +302,7 @@ Export strips helpers (grid, selection cages, gizmos) and serialises the booth a
 ```
 app/                     routes and API handlers
 app/sign-in, app/auth/   sign-in page, magic-link callback, sign-out
-middleware.ts            refreshes auth cookies and gates protected routes
+proxy.ts                 refreshes auth cookies and gates protected routes
 components/studio/       viewport, outliner, inspector
 lib/
   ai/gemini.ts           analysis, view synthesis, art direction, refinement
