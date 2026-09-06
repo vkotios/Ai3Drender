@@ -10,6 +10,7 @@ import type {
   Project,
   Scene,
   SceneRender,
+  SceneVersion,
   SourceImage,
   Uuid,
 } from '@/lib/types';
@@ -25,6 +26,7 @@ import type {
   NewSourceImage,
   Store,
 } from './store';
+import { SceneConflictError } from './store';
 
 const BUCKET = 'renders';
 
@@ -101,8 +103,18 @@ const toScene = (r: Row): Scene => ({
   doc: r.doc,
   direction: r.direction,
   acceptedAt: r.accepted_at,
+  version: r.version,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
+});
+
+const toSceneVersion = (r: Row): SceneVersion => ({
+  id: r.id,
+  sceneId: r.scene_id,
+  versionNumber: r.version_number,
+  doc: r.doc,
+  note: r.note,
+  createdAt: r.created_at,
 });
 
 const toAnnotation = (r: Row): Annotation => ({
@@ -390,27 +402,44 @@ export class SupabaseStore implements Store {
     return unwrap('listScenes', res).map(toScene);
   }
 
-  async updateScene(id: Uuid, patch: Partial<Scene>, note = ''): Promise<Scene> {
+  async updateScene(
+    id: Uuid,
+    patch: Partial<Scene>,
+    note = '',
+    expectedVersion?: number,
+  ): Promise<Scene> {
     const update: Row = {};
     if (patch.name !== undefined) update.name = patch.name;
     if (patch.doc !== undefined) update.doc = patch.doc;
     if (patch.direction !== undefined) update.direction = patch.direction;
     if (patch.acceptedAt !== undefined) update.accepted_at = patch.acceptedAt;
-    const res = await this.db.from('scenes').update(update).eq('id', id).select().single();
-    const scene = toScene(unwrap('updateScene', res));
+
+    // `version` itself is never set here - a trigger bumps it whenever `doc`
+    // actually changes. The `.eq('version', expectedVersion)` below is the
+    // optimistic-concurrency check: it is only added for content-changing
+    // saves that named the version they loaded, so background jobs and
+    // restores (which pass no expectedVersion) always win.
+    let query = this.db.from('scenes').update(update).eq('id', id);
+    if (patch.doc !== undefined && expectedVersion !== undefined) {
+      query = query.eq('version', expectedVersion);
+    }
+    const res = await query.select().maybeSingle();
+    if (res.error) throw new Error(`updateScene: ${res.error.message}`);
+
+    if (!res.data) {
+      // Zero rows matched: either the scene is gone, or the version guard
+      // above failed. Load the current row to tell the two apart and, for a
+      // conflict, hand the caller what the scene looks like now.
+      const current = await this.getScene(id);
+      if (!current) throw new Error(`scene ${id} not found`);
+      throw new SceneConflictError(current);
+    }
+    const scene = toScene(res.data);
 
     if (patch.doc !== undefined) {
-      const latest = await this.db
-        .from('scene_versions')
-        .select('version_number')
-        .eq('scene_id', id)
-        .order('version_number', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      const next = (latest.data?.version_number ?? 0) + 1;
       await this.db
         .from('scene_versions')
-        .insert({ scene_id: id, version_number: next, doc: patch.doc, note });
+        .insert({ scene_id: id, version_number: scene.version, doc: patch.doc, note });
     }
     return scene;
   }
@@ -418,6 +447,26 @@ export class SupabaseStore implements Store {
   async deleteScene(id: Uuid): Promise<void> {
     const { error } = await this.db.from('scenes').delete().eq('id', id);
     if (error) throw new Error(`deleteScene: ${error.message}`);
+  }
+
+  async listSceneVersions(sceneId: Uuid): Promise<SceneVersion[]> {
+    const res = await this.db
+      .from('scene_versions')
+      .select('*')
+      .eq('scene_id', sceneId)
+      .order('version_number', { ascending: false });
+    return unwrap('listSceneVersions', res).map(toSceneVersion);
+  }
+
+  async getSceneVersion(sceneId: Uuid, versionNumber: number): Promise<SceneVersion | null> {
+    const res = await this.db
+      .from('scene_versions')
+      .select('*')
+      .eq('scene_id', sceneId)
+      .eq('version_number', versionNumber)
+      .maybeSingle();
+    if (res.error) throw new Error(`getSceneVersion: ${res.error.message}`);
+    return res.data ? toSceneVersion(res.data) : null;
   }
 
   /* Jobs ------------------------------------------------------------------- */

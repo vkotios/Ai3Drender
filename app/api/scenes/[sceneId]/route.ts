@@ -1,4 +1,5 @@
 import { apiError, json, withScene } from '@/lib/api';
+import { SceneConflictError } from '@/lib/db/store';
 import type { SceneDoc } from '@/lib/types';
 
 type Params = { params: Promise<{ sceneId: string }> };
@@ -40,17 +41,36 @@ export async function PATCH(request: Request, { params }: Params) {
       doc?: SceneDoc;
       note?: string;
       acceptedAt?: string | null;
+      /** The `version` this save was loaded from - see `SceneConflictError`. */
+      expectedVersion?: number;
+      /** Skip the version check and save over whatever is there now. */
+      force?: boolean;
     };
     if (body.doc && body.doc.schemaVersion !== 1) {
       return apiError(`Unsupported scene schema version ${body.doc.schemaVersion}`);
     }
-    return json(
-      await store.updateScene(
-        scene.id,
-        { name: body.name, doc: body.doc, acceptedAt: body.acceptedAt },
-        body.note ?? 'edited in studio',
-      ),
-    );
+    try {
+      return json(
+        await store.updateScene(
+          scene.id,
+          { name: body.name, doc: body.doc, acceptedAt: body.acceptedAt },
+          body.note ?? 'edited in studio',
+          body.force ? undefined : body.expectedVersion,
+        ),
+      );
+    } catch (cause) {
+      if (cause instanceof SceneConflictError) {
+        return json(
+          {
+            error:
+              'Someone else saved changes to this scene since you loaded it. Reload to see them, or overwrite anyway.',
+            current: cause.current,
+          },
+          409,
+        );
+      }
+      throw cause;
+    }
   });
 }
 
