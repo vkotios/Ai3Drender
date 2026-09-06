@@ -8,14 +8,50 @@ import * as THREE from 'three';
 import type { Annotation, AssetVersion, SceneNode } from '@/lib/types';
 import type { PendingPin, StudioMode } from '@/lib/studio/store';
 
+import { MeshUrlBoundary } from './MeshUrlBoundary';
+
+interface AssetNodeProps {
+  node: SceneNode;
+  version: AssetVersion;
+  /** Storage key the mesh URL was resolved from - what a refresh re-resolves. */
+  meshPath: string;
+  meshUrl: string;
+  /** Null in local-disk mode: that URL is stable and never needs refreshing. */
+  meshUrlExpiresAt: string | null;
+  selected: boolean;
+  mode: StudioMode;
+  annotations: Annotation[];
+  pendingPin: PendingPin | null;
+  selectedAnnotationId: string | null;
+  onSelect: () => void;
+  onPin: (pin: Omit<PendingPin, 'nodeId' | 'assetId' | 'assetVersionId'>) => void;
+  onSelectAnnotation: (id: string) => void;
+}
+
 /**
  * One reconstructed furniture piece in the scene.
+ *
+ * Wraps the actual mesh in `MeshUrlBoundary` so a signed mesh URL resolved
+ * when the page rendered gets refreshed before it goes stale (and retried
+ * once if it is ever used past that anyway), rather than staying good for
+ * only as long as its one-hour signature - see that component for why.
+ */
+export function AssetNode({ meshPath, meshUrl, meshUrlExpiresAt, ...rest }: AssetNodeProps) {
+  return (
+    <MeshUrlBoundary meshKey={meshPath} initialUrl={meshUrl} initialExpiresAt={meshUrlExpiresAt}>
+      {(url) => <AssetMesh {...rest} meshUrl={url} />}
+    </MeshUrlBoundary>
+  );
+}
+
+/**
+ * The actual mesh, scaled and grounded.
  *
  * Two things have to happen to a vendor mesh before it can share a scene with
  * anything else: it must be scaled to real-world size, and it must be grounded
  * so its lowest point sits on y=0 rather than wherever the vendor's origin fell.
  */
-export function AssetNode({
+function AssetMesh({
   node,
   version,
   meshUrl,
@@ -27,19 +63,7 @@ export function AssetNode({
   onSelect,
   onPin,
   onSelectAnnotation,
-}: {
-  node: SceneNode;
-  version: AssetVersion;
-  meshUrl: string;
-  selected: boolean;
-  mode: StudioMode;
-  annotations: Annotation[];
-  pendingPin: PendingPin | null;
-  selectedAnnotationId: string | null;
-  onSelect: () => void;
-  onPin: (pin: Omit<PendingPin, 'nodeId' | 'assetId' | 'assetVersionId'>) => void;
-  onSelectAnnotation: (id: string) => void;
-}) {
+}: Omit<AssetNodeProps, 'meshPath' | 'meshUrlExpiresAt'>) {
   const { scene } = useGLTF(meshUrl);
   const groupRef = useRef<THREE.Group>(null);
 

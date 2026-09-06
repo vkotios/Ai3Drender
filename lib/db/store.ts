@@ -19,6 +19,17 @@ export interface Blob {
   contentType: string;
 }
 
+/**
+ * How long a freshly minted `blobUrl()` is good for in `SupabaseStore`. Local
+ * disk URLs never expire, so this only applies in Supabase mode.
+ *
+ * Shared here (rather than living only inside `SupabaseStore`) so anything
+ * that hands a URL to the browser and needs to know when to ask for a new one
+ * - see `blobUrlWithExpiry` in `lib/db/index.ts` - agrees with the value the
+ * signing call itself actually used.
+ */
+export const SIGNED_URL_TTL_SECONDS = 3600;
+
 export interface NewProject {
   ownerId: string;
   name: string;
@@ -139,6 +150,12 @@ export interface Store {
   putBlob(key: string, bytes: Uint8Array, contentType: string): Promise<string>;
   getBlob(key: string): Promise<Blob | null>;
   deleteBlob(key: string): Promise<void>;
-  /** A URL the browser can fetch. May be signed and time-limited. */
+  /**
+   * A URL the browser can fetch. May be signed and time-limited (see
+   * `SIGNED_URL_TTL_SECONDS`) - callers that hand this to a long-lived page
+   * should re-resolve it before it goes stale rather than trusting one call
+   * forever. `GET /api/blob-url` and `lib/studio/blobUrl.ts` do that for the
+   * studio viewport.
+   */
   blobUrl(key: string): Promise<string>;
 }

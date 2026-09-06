@@ -25,6 +25,7 @@ import type {
   NewSourceImage,
   Store,
 } from './store';
+import { SIGNED_URL_TTL_SECONDS } from './store';
 
 const BUCKET = 'renders';
 
@@ -672,9 +673,13 @@ export class SupabaseStore implements Store {
   }
 
   async blobUrl(key: string): Promise<string> {
-    // The bucket is private, so hand out a short-lived signed URL. One hour is
-    // long enough for a studio session without leaving links usable forever.
-    const { data, error } = await this.db.storage.from(BUCKET).createSignedUrl(key, 3600);
+    // The bucket is private, so hand out a short-lived signed URL. Long-lived
+    // pages (the studio viewport) re-resolve this before it goes stale rather
+    // than the TTL being stretched to cover a whole session - see
+    // `blobUrlWithExpiry` in lib/db/index.ts and `GET /api/blob-url`.
+    const { data, error } = await this.db.storage
+      .from(BUCKET)
+      .createSignedUrl(key, SIGNED_URL_TTL_SECONDS);
     if (error || !data) throw new Error(`blobUrl ${key}: ${error?.message ?? 'no url'}`);
     return data.signedUrl;
   }

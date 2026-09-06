@@ -1,4 +1,5 @@
 import { apiError, json, withScene } from '@/lib/api';
+import { blobUrlWithExpiry } from '@/lib/db';
 import type { SceneDoc } from '@/lib/types';
 
 type Params = { params: Promise<{ sceneId: string }> };
@@ -15,10 +16,10 @@ export async function GET(_request: Request, { params }: Params) {
     for (const id of versionIds) {
       const version = await store.getAssetVersion(id);
       if (!version) continue;
-      versions.push({
-        version,
-        meshUrl: version.meshPath ? await store.blobUrl(version.meshPath) : null,
-      });
+      const resolved = version.meshPath
+        ? await blobUrlWithExpiry(store, version.meshPath)
+        : { url: null, expiresAt: null };
+      versions.push({ version, meshUrl: resolved.url, meshUrlExpiresAt: resolved.expiresAt });
     }
     // The studio needs every note on every staged piece, plus any renders
     // already produced for this stand.

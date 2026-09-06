@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 
 import { StudioShell } from '@/components/studio/StudioShell';
-import { requireProject } from '@/lib/db';
+import { blobUrlWithExpiry, requireProject } from '@/lib/db';
 import { requireSession } from '@/lib/auth';
 import { hasGemini } from '@/lib/env';
 import type { LoadedVersion } from '@/lib/studio/store';
@@ -31,7 +31,8 @@ export default async function StudioPage({
     if (!asset.currentVersionId) continue;
     const version = await store.getAssetVersion(asset.currentVersionId);
     if (!version?.meshPath) continue;
-    available.push({ version, meshUrl: await store.blobUrl(version.meshPath) });
+    const { url, expiresAt } = await blobUrlWithExpiry(store, version.meshPath);
+    available.push({ version, meshUrl: url, meshUrlExpiresAt: expiresAt });
   }
 
   // Versions the scene already references may be older than the current one.
@@ -47,7 +48,8 @@ export default async function StudioPage({
     }
     const version = await store.getAssetVersion(id);
     if (!version?.meshPath) continue;
-    versions.push({ version, meshUrl: await store.blobUrl(version.meshPath) });
+    const { url, expiresAt } = await blobUrlWithExpiry(store, version.meshPath);
+    versions.push({ version, meshUrl: url, meshUrlExpiresAt: expiresAt });
   }
 
   const annotations = await store.listAnnotations([
