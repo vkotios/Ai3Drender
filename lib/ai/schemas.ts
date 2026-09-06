@@ -112,6 +112,60 @@ export const FURNITURE_SPEC_SCHEMA = {
   ],
 } as const;
 
+/**
+ * One categorized defect (issue #56). `category` is a small closed enum -
+ * see `MeshDefectCategory` in lib/types.ts for what each value means - rather
+ * than free text, so the model reliably picks from a fixed rubric instead of
+ * inventing its own wording for the same handful of failure modes.
+ */
+const meshDefect = {
+  type: 'OBJECT',
+  properties: {
+    category: {
+      type: 'STRING',
+      format: 'enum',
+      enum: [
+        'fused_parts',
+        'incomplete_part',
+        'missing_geometry',
+        'extra_geometry',
+        'form_defect',
+        'surface_defect',
+        'texture_defect',
+      ],
+      description:
+        'fused_parts = distinct parts read as one merged blob; incomplete_part = a part is ' +
+        'present but truncated/thin/not fully formed; missing_geometry = a part or feature the ' +
+        'photos show is entirely absent; extra_geometry = geometry present that should not be ' +
+        '(duplicated part, floating artifact); form_defect = overall silhouette/proportions read ' +
+        'wrong though every part is present; surface_defect = local surface noise/warping/holes ' +
+        'on an otherwise correct part; texture_defect = geometry is right but colour/material/ ' +
+        'finish reads wrong.',
+    },
+    description: {
+      type: 'STRING',
+      description:
+        'One concrete sentence, e.g. "the left armrest is fused into the backrest with no seam".',
+    },
+    severity: {
+      type: 'STRING',
+      format: 'enum',
+      enum: ['minor', 'moderate', 'severe'],
+      description: 'How much this defect would matter to a buyer looking closely at the piece.',
+    },
+    componentName: {
+      type: 'STRING',
+      nullable: true,
+      description:
+        'The exact name of the affected component, copied verbatim from the "Named components" ' +
+        'list, when this defect is localized to one specific part. Null when it affects the ' +
+        'whole piece or spans several parts equally (e.g. an overall proportion issue), or when ' +
+        'no named component list was supplied.',
+    },
+  },
+  required: ['category', 'description', 'severity', 'componentName'],
+} as const;
+
 export const QA_RESULT_SCHEMA = {
   type: 'OBJECT',
   properties: {
@@ -120,18 +174,18 @@ export const QA_RESULT_SCHEMA = {
       description:
         '0 to 100 fidelity score: how closely the rendered mesh views match the source ' +
         'photographs in silhouette, proportions, materials and colour. 100 = indistinguishable ' +
-        'from the photos; 0 = no resemblance at all.',
+        'from the photos; 0 = no resemblance at all. An overall summary - put the specifics in ' +
+        'defects below.',
     },
-    issues: {
+    defects: {
       type: 'ARRAY',
-      items: { type: 'STRING' },
+      items: meshDefect,
       description:
-        'Specific mismatches between the mesh and the photos, e.g. "missing armrest", ' +
-        '"legs are too thick", "seat cushion is the wrong colour". Empty array when the mesh ' +
-        'is a faithful match.',
+        'Concrete, categorized mismatches between the mesh and the photos. Empty array when the ' +
+        'mesh is a faithful match. Do not restate the score as a defect.',
     },
   },
-  required: ['score', 'issues'],
+  required: ['score', 'defects'],
 } as const;
 
 /**
@@ -166,6 +220,155 @@ export const PART_REFERENCE_SCHEMA = {
     },
   },
   required: ['partName'],
+} as const;
+
+/**
+ * One edit produced by `interpretSceneCommand` (lib/ai/gemini.ts, issue #60).
+ *
+ * A flat object carrying every field any supported mutation kind might use,
+ * almost all nullable - Gemini's structured-output schema (an OpenAPI 3.0
+ * subset) has no good way to express "this field only applies when `kind` is
+ * X" as a discriminated union, so the wire shape stays flat and
+ * `normalizeRawMutation` (lib/scene/command.ts) is what actually enforces
+ * which fields matter for which kind. Keep this list of kinds CLOSED - see
+ * `SCENE_MUTATION_KINDS` in that same module, the single source of truth this
+ * mirrors.
+ */
+export const SCENE_MUTATION_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    kind: {
+      type: 'STRING',
+      format: 'enum',
+      enum: [
+        'move_node',
+        'rotate_node',
+        'scale_node',
+        'set_material_override',
+        'set_light_property',
+        'set_visibility',
+        'add_prop',
+      ],
+    },
+    nodeName: {
+      type: 'STRING',
+      nullable: true,
+      description:
+        'The exact name of the staged node this mutation targets, copied verbatim from the ' +
+        '"Staged nodes" list. Null for add_prop (which creates a new node instead of targeting ' +
+        'one), or when no listed node plausibly matches - never invent a name.',
+    },
+    deltaMeters: {
+      type: 'OBJECT',
+      nullable: true,
+      properties: { x: { type: 'NUMBER' }, y: { type: 'NUMBER' }, z: { type: 'NUMBER' } },
+      description:
+        "move_node only: metres to ADD to the node's current position (a delta, not an " +
+        'absolute position). +X is right, -X is left, +Z is toward the aisle/camera (front), ' +
+        '-Z is toward the back wall, +Y is up. Convert cm/mm in the instruction to metres.',
+    },
+    deltaDegrees: {
+      type: 'OBJECT',
+      nullable: true,
+      properties: { x: { type: 'NUMBER' }, y: { type: 'NUMBER' }, z: { type: 'NUMBER' } },
+      description:
+        "rotate_node only: degrees to ADD to the node's current rotation about each axis (a " +
+        'delta, not an absolute angle). Turning left/right as seen from above is the Y axis.',
+    },
+    scaleFactor: {
+      type: 'NUMBER',
+      nullable: true,
+      description:
+        "scale_node only: multiplier applied to the node's CURRENT scale on every axis - e.g. " +
+        '1.2 for "20% bigger", 0.5 for "half the size". Not an absolute scale value.',
+    },
+    materialName: {
+      type: 'STRING',
+      nullable: true,
+      description:
+        "set_material_override only: exact material name copied from the target node's " +
+        'materials list. Null when the node has only one material, or a prop (which always has ' +
+        'a single material slot), or the instruction did not name one.',
+    },
+    baseColorHex: {
+      type: 'STRING',
+      nullable: true,
+      description: 'set_material_override only: the new base colour, CSS hex e.g. #8B5A2B. Null when colour is unchanged.',
+    },
+    roughness: {
+      type: 'NUMBER',
+      nullable: true,
+      description: 'set_material_override only: 0 (mirror-smooth) to 1 (fully diffuse). Null when unchanged.',
+    },
+    metalness: {
+      type: 'NUMBER',
+      nullable: true,
+      description: 'set_material_override only: 0 (dielectric) to 1 (bare metal). Null when unchanged.',
+    },
+    finish: {
+      type: 'STRING',
+      nullable: true,
+      description: 'set_material_override only: e.g. "matte", "polished". Null when unchanged.',
+    },
+    colorHex: {
+      type: 'STRING',
+      nullable: true,
+      description:
+        'set_light_property only: the new light colour, CSS hex - e.g. shift warmer/cooler in ' +
+        'response to "warm up"/"cool down the lighting". Null when colour is unchanged.',
+    },
+    intensity: {
+      type: 'NUMBER',
+      nullable: true,
+      description: 'set_light_property only: the new light intensity (absolute, not a delta). Null when unchanged.',
+    },
+    distance: {
+      type: 'NUMBER',
+      nullable: true,
+      description: 'set_light_property only: the new falloff distance in metres (absolute). Null when unchanged.',
+    },
+    visible: {
+      type: 'BOOLEAN',
+      nullable: true,
+      description: 'set_visibility only: true to show the node, false to hide it.',
+    },
+    propKind: {
+      type: 'STRING',
+      nullable: true,
+      format: 'enum',
+      enum: ['plinth', 'rug', 'partition', 'planter', 'side_table', 'floor_lamp'],
+      description: 'add_prop only: which kind of simple staging prop to add.',
+    },
+    name: {
+      type: 'STRING',
+      nullable: true,
+      description: "add_prop only: display name for the new prop. Null to use the prop kind's default label.",
+    },
+  },
+  required: ['kind'],
+} as const;
+
+/** See `interpretSceneCommand` in lib/ai/gemini.ts (issue #60). */
+export const SCENE_COMMAND_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    mutations: {
+      type: 'ARRAY',
+      items: SCENE_MUTATION_SCHEMA,
+      description:
+        'Ordered list of concrete edits this command implies, using ONLY the supported ' +
+        'mutation kinds. Empty array when nothing in the command maps to one.',
+    },
+    unresolved: {
+      type: 'ARRAY',
+      items: { type: 'STRING' },
+      description:
+        'Any distinct part of the command that could not be turned into a supported mutation - ' +
+        'an unsupported kind of edit, or one naming a piece/material that is not listed - given ' +
+        'in the operator\'s own words rather than guessed at. Empty when the whole command was understood.',
+    },
+  },
+  required: ['mutations', 'unresolved'],
 } as const;
 
 export const SCENE_DIRECTION_SCHEMA = {

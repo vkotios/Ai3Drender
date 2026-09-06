@@ -1,10 +1,30 @@
 import { GoogleGenAI } from '@google/genai';
 
 import { env, hasGemini } from '@/lib/env';
-import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, QaResult, SceneDirection } from '@/lib/types';
+import { resolveComponent } from '@/lib/scene/anchor';
+import type { VersionLookup } from '@/lib/scene/collisions';
+import {
+  normalizeRawMutation,
+  summarizeSceneForCommand,
+  type RawSceneMutation,
+  type SceneCommandResult,
+  type SceneMutation,
+} from '@/lib/scene/command';
+import type {
+  FurnitureSpec,
+  MaterialLibraryEntry,
+  MaterialSpec,
+  MeshDefect,
+  MeshDefectCategory,
+  MeshDefectSeverity,
+  QaResult,
+  SceneDirection,
+  SceneDoc,
+} from '@/lib/types';
 
 import {
   offlineFurnitureSpec,
+  offlineInterpretSceneCommand,
   offlineMaterialCorrection,
   offlineQaResult,
   offlineResolvePartReference,
@@ -15,6 +35,7 @@ import {
   MATERIAL_CORRECTION_SCHEMA,
   PART_REFERENCE_SCHEMA,
   QA_RESULT_SCHEMA,
+  SCENE_COMMAND_SCHEMA,
   SCENE_DIRECTION_SCHEMA,
 } from './schemas';
 
@@ -334,15 +355,74 @@ Compare them and judge how faithfully the mesh reproduces the piece in the photo
 
 Rules:
 - Score fidelity from 0 (no resemblance) to 100 (matches the photos closely) considering
-  silhouette, proportions, materials/colour and any visible construction detail.
+  silhouette, proportions, materials/colour and any visible construction detail. This score
+  is an overall summary - the specifics belong in the defects list below.
 - Ignore rendering differences that are not the mesh's fault: the renders use flat studio
   shading with no environment, so lighting, background and photographic finish never count
-  against the score.
-- List only concrete, specific mismatches (e.g. "missing left armrest", "legs read much
-  thicker than in the photos", "seat cushion is grey instead of the photographed tan"). Do
-  not restate the score as an issue, and leave the list empty when the mesh is a faithful
-  match.
+  against the score or the defects list.
+- List only concrete, specific mismatches as entries in the defects list (e.g. "missing left
+  armrest" as missing_geometry, "legs read much thicker than in the photos" as form_defect,
+  "seat cushion is grey instead of the photographed tan" as texture_defect). Do not restate
+  the score as a defect, and leave the list empty when the mesh is a faithful match.
+- Pick each defect's category from the fixed rubric in the schema - do not invent a new one.
+- When a defect clearly belongs to one specific named component, set componentName to that
+  component's exact name, copied verbatim from the "Named components" list below. Leave it
+  null when the defect spans the whole piece or several parts, or when nothing in the list
+  fits.
 `.trim();
+
+function formatKnownComponents(components: { name: string; role: string }[]): string {
+  if (components.length === 0) return '';
+  const rows = components.map((c) => `- "${c.name}" (role: ${c.role})`).join('\n');
+  return `Named components on this piece, for attributing a defect to a specific part:\n${rows}`;
+}
+
+const MESH_DEFECT_CATEGORIES = new Set<MeshDefectCategory>([
+  'fused_parts',
+  'incomplete_part',
+  'missing_geometry',
+  'extra_geometry',
+  'form_defect',
+  'surface_defect',
+  'texture_defect',
+]);
+
+const MESH_DEFECT_SEVERITIES = new Set<MeshDefectSeverity>(['minor', 'moderate', 'severe']);
+
+/** Raw shape Gemini actually returns for one defect, before validation. */
+interface RawMeshDefect {
+  category?: string;
+  description?: string;
+  severity?: string;
+  componentName?: string | null;
+}
+
+/**
+ * Validate and normalize the defects Gemini returned: drop anything with an
+ * unrecognised category or an empty description, default an unrecognised
+ * severity to 'moderate' rather than dropping an otherwise-real defect over
+ * it, and resolve `componentName` against the piece's actual components the
+ * same way a rebake target is (`resolveComponent`, issue #57) so a value the
+ * model invented or mis-copied never reaches the caller as if it were real.
+ */
+function normalizeDefects(raw: unknown, components: { name: string; role: string }[]): MeshDefect[] {
+  if (!Array.isArray(raw)) return [];
+  const defects: MeshDefect[] = [];
+  for (const entry of raw as RawMeshDefect[]) {
+    if (!entry || typeof entry !== 'object') continue;
+    const category = entry.category;
+    if (!category || !MESH_DEFECT_CATEGORIES.has(category as MeshDefectCategory)) continue;
+    const description = typeof entry.description === 'string' ? entry.description.trim() : '';
+    if (!description) continue;
+    const severity =
+      entry.severity && MESH_DEFECT_SEVERITIES.has(entry.severity as MeshDefectSeverity)
+        ? (entry.severity as MeshDefectSeverity)
+        : 'moderate';
+    const componentName = resolveComponent(entry.componentName ?? null, { components }).componentName;
+    defects.push({ category: category as MeshDefectCategory, description, severity, componentName });
+  }
+  return defects;
+}
 
 /**
  * Ask Gemini vision whether a reconstructed mesh actually looks like the
@@ -357,12 +437,14 @@ Rules:
 export async function evaluateReconstruction(
   sourcePhotos: ImageInput[],
   meshViews: { angle: string; image: GeneratedImage }[],
-  spec: Pick<FurnitureSpec, 'displayName' | 'category' | 'summary'>,
+  spec: Pick<FurnitureSpec, 'displayName' | 'category' | 'summary' | 'components'>,
 ): Promise<QaResult> {
   const usablePhotos = sourcePhotos.filter((i) => i.role !== 'mood');
   if (!hasGemini || usablePhotos.length === 0 || meshViews.length === 0) {
     return offlineQaResult();
   }
+
+  const componentBlock = formatKnownComponents(spec.components ?? []);
 
   const response = await ai().models.generateContent({
     model: env.geminiTextModel,
@@ -372,6 +454,7 @@ export async function evaluateReconstruction(
         parts: [
           { text: QA_PROMPT },
           { text: `The piece is a ${spec.category}: ${spec.displayName}. ${spec.summary}` },
+          ...(componentBlock ? [{ text: componentBlock }] : []),
           { text: 'Original photographs:' },
           ...usablePhotos.map(imagePart),
           { text: 'Rendered views of the reconstructed mesh:' },
@@ -386,11 +469,11 @@ export async function evaluateReconstruction(
     },
   });
 
-  const parsed = parseJson<{ score: number; issues: string[] }>(response.text ?? '', 'evaluateReconstruction');
+  const parsed = parseJson<{ score: number; defects: unknown }>(response.text ?? '', 'evaluateReconstruction');
   const score = Number.isFinite(parsed.score) ? Math.min(100, Math.max(0, parsed.score)) : 0;
   return {
     score,
-    issues: Array.isArray(parsed.issues) ? parsed.issues.filter(Boolean) : [],
+    defects: normalizeDefects(parsed.defects, spec.components ?? []),
     source: 'gemini',
   };
 }
@@ -652,6 +735,94 @@ User's description: "${query}"
 
   const parsed = parseJson<{ partName: string | null }>(response.text ?? '', 'resolvePartReference');
   return parts.find((p) => p.name === parsed.partName)?.name ?? null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 6c. Natural-language studio command -> a closed set of scene mutations     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Turn a free-text studio command ("move the sofa 30cm left and warm up the
+ * lighting") into an ordered list of concrete mutations drawn from a CLOSED,
+ * explicit set - see `SCENE_MUTATION_KINDS` in lib/scene/command.ts. This is
+ * issue #60, deliberately scoped to a single structured call for the app's
+ * own operator, never an open-ended agentic tool-use loop or an external MCP
+ * integration - same "free text in, small structured object out" shape as
+ * `correctMaterial`/`resolvePartReference` above.
+ *
+ * This function only interprets - it never touches the document. The route
+ * (`POST /api/scenes/:sceneId/command`) is what calls `applySceneMutations`
+ * with the result and saves it back through the ordinary scene-save path.
+ */
+export async function interpretSceneCommand(
+  doc: SceneDoc,
+  versions: VersionLookup,
+  command: string,
+): Promise<SceneCommandResult> {
+  if (!hasGemini) return offlineInterpretSceneCommand(doc, versions, command);
+
+  const response = await ai().models.generateContent({
+    model: env.geminiTextModel,
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `
+You are translating one operator's plain-language staging instruction into a small, ordered
+list of concrete edits to a furniture exhibition stand, using ONLY a closed set of supported
+edit kinds. Never invent a kind of edit that is not listed below, and never invent a node,
+material or prop kind that is not listed for this stand.
+
+Supported mutation kinds:
+- move_node: nudge a staged piece by a position delta.
+- rotate_node: turn a staged piece by a rotation delta.
+- scale_node: resize a staged piece by a multiplier.
+- set_material_override: change one material's colour/roughness/metalness/finish on a piece,
+  without touching the underlying product specification.
+- set_light_property: change a light's colour, intensity or falloff distance.
+- set_visibility: show or hide a piece.
+- add_prop: add one new simple staging prop (plinth, rug, partition, planter, side table or
+  floor lamp).
+
+Coordinate convention: +X is to the right and -X is to the left, as seen from the aisle camera
+facing the booth. +Z is toward the aisle/camera (the front, nearer the viewer) and -Z is toward
+the back wall (farther from the viewer). +Y is up. Convert any distance given in cm or mm to
+metres, and any rotation given in a unit other than degrees to degrees.
+
+Staged nodes on this stand:
+${summarizeSceneForCommand(doc, versions)}
+
+Operator's command: "${command}"
+
+Every distinct part of the command that doesn't map onto exactly one of the supported kinds
+above, or that names a piece/material not listed above, goes into "unresolved" in the
+operator's own words instead of being guessed at.
+`.trim(),
+          },
+        ],
+      },
+    ],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: SCENE_COMMAND_SCHEMA as never,
+      temperature: 0.2,
+    },
+  });
+
+  const parsed = parseJson<{ mutations: RawSceneMutation[]; unresolved: string[] }>(
+    response.text ?? '',
+    'interpretSceneCommand',
+  );
+
+  const mutations: SceneMutation[] = [];
+  const unresolved = Array.isArray(parsed.unresolved) ? parsed.unresolved.filter(Boolean) : [];
+  for (const raw of Array.isArray(parsed.mutations) ? parsed.mutations : []) {
+    const result = normalizeRawMutation(raw, doc);
+    if ('problem' in result) unresolved.push(result.problem);
+    else mutations.push(result);
+  }
+  return { mutations, unresolved };
 }
 
 /* -------------------------------------------------------------------------- */

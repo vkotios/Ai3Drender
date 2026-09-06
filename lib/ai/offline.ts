@@ -1,4 +1,19 @@
-import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, QaResult, SceneDirection } from '@/lib/types';
+import type { VersionLookup } from '@/lib/scene/collisions';
+import {
+  normalizeRawMutation,
+  resolveMaterialTarget,
+  type RawSceneMutation,
+  type SceneCommandResult,
+} from '@/lib/scene/command';
+import type {
+  FurnitureSpec,
+  MaterialLibraryEntry,
+  MaterialSpec,
+  QaResult,
+  SceneDirection,
+  SceneDoc,
+  SceneNode,
+} from '@/lib/types';
 
 /**
  * Deterministic stand-in for the Gemini vision pass, used when GEMINI_API_KEY
@@ -276,17 +291,20 @@ export function offlineFurnitureSpec(
 /**
  * Deterministic stand-in for the perceptual QA vision pass. There is no model
  * to actually compare the mesh against the photos, so this does not fabricate
- * a real fidelity judgement - `score`/`issues` are placeholders, never shown
+ * a real fidelity judgement - `score`/`defects` are placeholders, never shown
  * as if they were a real check. `source: 'offline'` is what callers (the
  * pipeline, the UI badge) must key off of: it is what marks this as "not
  * actually assessed" rather than "assessed and found perfect". Consistent
  * with `offlineFurnitureSpec` producing a clearly-labelled placeholder rather
  * than throwing, so the pipeline keeps running end to end without a key.
+ *
+ * `defects: []` rather than a fabricated category (issue #56) - there is no
+ * vision pass here to have found anything, categorized or not.
  */
 export function offlineQaResult(): QaResult {
   return {
     score: 100,
-    issues: [],
+    defects: [],
     source: 'offline',
   };
 }
@@ -437,4 +455,294 @@ export function offlineSceneDirection(pieces: string[]): SceneDirection {
       'shadow detail, and a warm accent grazing the back wall for depth.',
     suggestedProps: ['rug', 'plinth', 'planter'],
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Offline studio command parser (issue #60)                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Deterministic stand-in for `interpretSceneCommand` (lib/ai/gemini.ts), used
+ * when GEMINI_API_KEY is unset. It cannot reason about arbitrary phrasing the
+ * way a model can, so instead it recognises a handful of common verbs -
+ * move/shift/nudge, rotate/turn, scale/resize/bigger/smaller, show/hide,
+ * warm up/cool down/brighten/dim, darker/lighter/matte/glossy, add a <prop> -
+ * against whichever node they most plausibly refer to (by shared words with
+ * the node's name, same scoring `offlineResolvePartReference` already uses).
+ *
+ * The command is split into clauses on "and"/","/";"/"then" and each clause
+ * tried against every recognised verb in a fixed priority order; a clause
+ * matching none of them is reported back verbatim in `unresolved` rather than
+ * silently dropped. Every raw mutation this produces is run back through the
+ * same `normalizeRawMutation` the Gemini path uses, so both paths are held to
+ * exactly the same validation rules.
+ */
+function wordsOf(s: string): Set<string> {
+  return new Set(s.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+}
+
+/** Best-scoring node by shared words with `query` (name plus, for a prop, its prop kind). Null when nothing shares even one word. Generic so a caller filtering to e.g. only light nodes keeps that narrowed type on the result. */
+function resolveNodeOffline<T extends SceneNode>(query: string, nodes: T[]): T | null {
+  const queryWords = wordsOf(query);
+  if (queryWords.size === 0 || nodes.length === 0) return null;
+
+  let best: { node: T; score: number } | null = null;
+  for (const node of nodes) {
+    const haystack = `${node.name} ${node.propKind ?? ''}`;
+    const score = [...wordsOf(haystack)].filter((w) => queryWords.has(w)).length;
+    if (score > 0 && (!best || score > best.score)) best = { node, score };
+  }
+  return best?.node ?? null;
+}
+
+/**
+ * Same as `resolveNodeOffline`, but falls back to the sole candidate when
+ * there is only one and nothing shared a word with it - e.g. "make the
+ * cushion matte" names a *material*, not a node, but when exactly one asset
+ * is staged there is nothing else it could mean. Ambiguous (2+ candidates,
+ * no match) still resolves to nothing rather than guessing.
+ */
+function resolveNodeOfflineWithFallback<T extends SceneNode>(query: string, nodes: T[]): T | null {
+  return resolveNodeOffline(query, nodes) ?? (nodes.length === 1 ? nodes[0] : null);
+}
+
+/** Best-scoring material name on `node` by shared words with `clause`. Null when the node has one material (nothing to disambiguate) or nothing shares a word. */
+function resolveMaterialNameOffline(clause: string, node: SceneNode, versions: VersionLookup): string | null {
+  if (node.kind !== 'asset' || !node.assetVersionId) return null;
+  const materials = versions[node.assetVersionId]?.version.spec.materials ?? [];
+  if (materials.length <= 1) return null;
+
+  const clauseWords = wordsOf(clause);
+  let best: { name: string; score: number } | null = null;
+  for (const material of materials) {
+    const score = [...wordsOf(material.name)].filter((w) => clauseWords.has(w)).length;
+    if (score > 0 && (!best || score > best.score)) best = { name: material.name, score };
+  }
+  return best?.name ?? null;
+}
+
+const METRE_PATTERN = /([\d]*\.?\d+)\s*(mm|cm|m)\b/i;
+
+function toMetres(amount: number, unit: string): number {
+  switch (unit.toLowerCase()) {
+    case 'mm':
+      return amount / 1000;
+    case 'cm':
+      return amount / 100;
+    default:
+      return amount;
+  }
+}
+
+const PROP_KEYWORDS: Array<{ pattern: RegExp; propKind: string }> = [
+  { pattern: /\bplinths?\b/i, propKind: 'plinth' },
+  { pattern: /\brugs?\b/i, propKind: 'rug' },
+  { pattern: /\bpartitions?\b/i, propKind: 'partition' },
+  { pattern: /\bplanters?\b/i, propKind: 'planter' },
+  { pattern: /\bside[\s-]?tables?\b/i, propKind: 'side_table' },
+  { pattern: /\bfloor[\s-]?lamps?\b/i, propKind: 'floor_lamp' },
+];
+
+function offlineAddProp(clause: string): RawSceneMutation[] | null {
+  if (!/\badd\b/i.test(clause)) return null;
+  const match = PROP_KEYWORDS.find((p) => p.pattern.test(clause));
+  if (!match) return null;
+  return [{ kind: 'add_prop', propKind: match.propKind, name: null }];
+}
+
+function offlineMove(clause: string, doc: SceneDoc): RawSceneMutation[] | null {
+  if (!/\b(move|shift|nudge)\b/i.test(clause)) return null;
+  const amountMatch = clause.match(METRE_PATTERN);
+  const directionMatch = clause.match(/\b(left|right|forwards?|backwards?|back|up|down)\b/i);
+  if (!amountMatch || !directionMatch) return null;
+
+  const metres = toMetres(parseFloat(amountMatch[1]), amountMatch[2]);
+  const direction = directionMatch[1].toLowerCase();
+  const deltaMeters =
+    direction === 'left'
+      ? { x: -metres, y: 0, z: 0 }
+      : direction === 'right'
+        ? { x: metres, y: 0, z: 0 }
+        : direction === 'up'
+          ? { x: 0, y: metres, z: 0 }
+          : direction === 'down'
+            ? { x: 0, y: -metres, z: 0 }
+            : direction.startsWith('forward')
+              ? { x: 0, y: 0, z: metres }
+              : { x: 0, y: 0, z: -metres };
+
+  const node = resolveNodeOfflineWithFallback(clause, doc.nodes);
+  return [{ kind: 'move_node', nodeName: node?.name ?? null, deltaMeters }];
+}
+
+function offlineRotate(clause: string, doc: SceneDoc): RawSceneMutation[] | null {
+  if (!/\b(rotate|turn|spin)\b/i.test(clause)) return null;
+  const degMatch = clause.match(/([\d]*\.?\d+)\s*(?:deg(?:rees)?|°)?/);
+  if (!degMatch) return null;
+
+  let degrees = parseFloat(degMatch[1]);
+  if (!Number.isFinite(degrees) || degrees === 0) return null;
+  if (/\b(right|clockwise|\bcw\b)\b/i.test(clause)) degrees = -Math.abs(degrees);
+  else degrees = Math.abs(degrees);
+
+  const node = resolveNodeOfflineWithFallback(clause, doc.nodes);
+  return [{ kind: 'rotate_node', nodeName: node?.name ?? null, deltaDegrees: { x: 0, y: degrees, z: 0 } }];
+}
+
+function offlineScale(clause: string, doc: SceneDoc): RawSceneMutation[] | null {
+  const hasVerb = /\b(scale|resize)\b/i.test(clause);
+  const bigger = /\b(bigger|larger|enlarge|grow)\b/i.test(clause);
+  const smaller = /\b(smaller|shrink)\b/i.test(clause);
+  if (!hasVerb && !bigger && !smaller) return null;
+
+  let factor: number | null = null;
+  const pctMatch = clause.match(/([\d]*\.?\d+)\s*%/);
+  const multMatch = clause.match(/([\d]*\.?\d+)\s*x\b/i);
+  if (pctMatch) {
+    const pct = parseFloat(pctMatch[1]) / 100;
+    factor = smaller ? 1 - pct : 1 + pct;
+  } else if (multMatch) {
+    factor = parseFloat(multMatch[1]);
+  } else if (/\bhalf\b/i.test(clause)) {
+    factor = 0.5;
+  } else if (/\bdouble\b/i.test(clause)) {
+    factor = 2;
+  } else if (bigger) {
+    factor = 1.2;
+  } else if (smaller) {
+    factor = 0.8;
+  }
+  if (factor === null || !Number.isFinite(factor) || factor <= 0) return null;
+
+  const node = resolveNodeOfflineWithFallback(clause, doc.nodes);
+  return [{ kind: 'scale_node', nodeName: node?.name ?? null, scaleFactor: factor }];
+}
+
+function offlineVisibility(clause: string, doc: SceneDoc): RawSceneMutation[] | null {
+  const hide = /\b(hide|invisible)\b/i.test(clause);
+  const show = /\b(show|visible)\b/i.test(clause);
+  if (!hide && !show) return null;
+
+  const node = resolveNodeOfflineWithFallback(clause, doc.nodes);
+  return [{ kind: 'set_visibility', nodeName: node?.name ?? null, visible: hide ? false : true }];
+}
+
+/** Blend `from` toward `toward` by `t` (0..1). Used for a "warm up"/"cool down" shift, distinct from `mixHex`'s toward-black/white blend. */
+function blendHex(from: string, toward: string, t: number): string {
+  const a = (/^#[0-9a-f]{6}$/i.test(from) ? from : '#FFFFFF').replace('#', '');
+  const b = (/^#[0-9a-f]{6}$/i.test(toward) ? toward : '#FFFFFF').replace('#', '');
+  const ratio = Math.min(1, Math.max(0, t));
+  const mixed = [0, 2, 4].map((i) => {
+    const ca = parseInt(a.slice(i, i + 2), 16);
+    const cb = parseInt(b.slice(i, i + 2), 16);
+    return Math.round(ca + (cb - ca) * ratio);
+  });
+  return `#${mixed.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
+}
+
+const WARM_REFERENCE_HEX = '#FF9F45';
+const COOL_REFERENCE_HEX = '#9FC7FF';
+
+function offlineLight(clause: string, doc: SceneDoc): RawSceneMutation[] | null {
+  const warm = /\b(warm|warmer)\b/i.test(clause);
+  const cool = /\b(cool|cooler)\b/i.test(clause);
+  const brighten = /\b(brighten|brighter)\b/i.test(clause);
+  const dim = /\b(dim|dimmer|darken|darker)\b/i.test(clause);
+  if (!warm && !cool && !brighten && !dim) return null;
+
+  const lightNodes = doc.nodes.filter(
+    (n): n is SceneNode & { light: NonNullable<SceneNode['light']> } => n.kind === 'light' && n.light !== null,
+  );
+  if (lightNodes.length === 0) return null;
+
+  const named = resolveNodeOffline(clause, lightNodes);
+  const targets = named ? [named] : lightNodes;
+
+  return targets.map((node) => {
+    const seed = hash(`${node.id}|${clause}`);
+    const magnitude = 0.15 + (seed % 11) / 100; // 0.15..0.25, deterministic per (light, clause)
+    const colorHex = warm
+      ? blendHex(node.light.colorHex, WARM_REFERENCE_HEX, magnitude)
+      : cool
+        ? blendHex(node.light.colorHex, COOL_REFERENCE_HEX, magnitude)
+        : null;
+    const intensity = brighten ? node.light.intensity * 1.25 : dim ? node.light.intensity * 0.75 : null;
+    return { kind: 'set_light_property', nodeName: node.name, colorHex, intensity, distance: null };
+  });
+}
+
+function offlineMaterial(clause: string, doc: SceneDoc, versions: VersionLookup): RawSceneMutation[] | null {
+  const darker = /\bdarker\b/i.test(clause);
+  const lighter = /\blighter\b/i.test(clause);
+  const matte = /\b(matte|matt|flat)\b/i.test(clause);
+  const glossy = /\b(glossy|gloss|shiny|shinier|polished|lacquered)\b/i.test(clause);
+  if (!darker && !lighter && !matte && !glossy) return null;
+
+  const candidates = doc.nodes.filter((n) => n.kind === 'asset' || n.kind === 'prop');
+  const node = resolveNodeOfflineWithFallback(clause, candidates);
+  if (!node) {
+    return [{ kind: 'set_material_override', nodeName: null, materialName: null, baseColorHex: null, roughness: null, metalness: null, finish: null }];
+  }
+
+  const materialName = resolveMaterialNameOffline(clause, node, versions);
+  const target = resolveMaterialTarget(node, materialName, versions);
+  const seed = hash(`${node.id}|${clause}`);
+  const magnitude = 0.12 + (seed % 17) / 100; // 0.12..0.28, deterministic per (node, clause)
+
+  const baseColorHex =
+    target && darker ? mixHex(target.current.baseColorHex, -magnitude)
+    : target && lighter ? mixHex(target.current.baseColorHex, magnitude)
+    : null;
+  const roughness =
+    target && matte ? clamp01(target.current.roughness + magnitude)
+    : target && glossy ? clamp01(target.current.roughness - magnitude)
+    : null;
+  const finish = matte ? 'matte' : glossy ? 'polished' : null;
+
+  return [{ kind: 'set_material_override', nodeName: node.name, materialName, baseColorHex, roughness, metalness: null, finish }];
+}
+
+const OFFLINE_COMMAND_PARSERS: Array<
+  (clause: string, doc: SceneDoc, versions: VersionLookup) => RawSceneMutation[] | null
+> = [
+  (clause) => offlineAddProp(clause),
+  (clause, doc) => offlineMove(clause, doc),
+  (clause, doc) => offlineRotate(clause, doc),
+  (clause, doc) => offlineScale(clause, doc),
+  (clause, doc) => offlineVisibility(clause, doc),
+  (clause, doc) => offlineLight(clause, doc),
+  (clause, doc, versions) => offlineMaterial(clause, doc, versions),
+];
+
+export function offlineInterpretSceneCommand(
+  doc: SceneDoc,
+  versions: VersionLookup,
+  command: string,
+): SceneCommandResult {
+  const clauses = command
+    .split(/\band\b|\bthen\b|[,;]/i)
+    .map((c) => c.trim())
+    .filter(Boolean);
+
+  const mutations: SceneCommandResult['mutations'] = [];
+  const unresolved: string[] = [];
+
+  for (const clause of clauses) {
+    let raws: RawSceneMutation[] | null = null;
+    for (const parser of OFFLINE_COMMAND_PARSERS) {
+      raws = parser(clause, doc, versions);
+      if (raws) break;
+    }
+    if (!raws || raws.length === 0) {
+      unresolved.push(clause);
+      continue;
+    }
+    for (const raw of raws) {
+      const result = normalizeRawMutation(raw, doc);
+      if ('problem' in result) unresolved.push(result.problem);
+      else mutations.push(result);
+    }
+  }
+
+  return { mutations, unresolved };
 }
