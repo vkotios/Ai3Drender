@@ -83,6 +83,7 @@ beforeEach(async () => {
     providerJobId: null,
     refinement: null,
     qaResult: null,
+    previewMeshPath: null,
     acceptedAt: null,
   });
 
@@ -172,6 +173,7 @@ describe('GET /api/share/[token]/ar/[assetVersionId]', () => {
       providerJobId: null,
       refinement: null,
       qaResult: null,
+      previewMeshPath: null,
       acceptedAt: null,
     });
 

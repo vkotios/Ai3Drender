@@ -12,5 +12,7 @@ export const storageKeys = {
   render: (projectId: string, sceneId: string, kind: string, ext: string) =>
     `${projectId}/renders/${sceneId}/${kind}-${randomUUID()}.${ext}`,
   mesh: (projectId: string, versionId: string) => `${projectId}/meshes/${versionId}.glb`,
+  /** Decimated viewport copy of `mesh()` - see `lib/ai/mesh/simplify.ts`. */
+  previewMesh: (projectId: string, versionId: string) => `${projectId}/meshes/${versionId}-preview.glb`,
   preview: (projectId: string, versionId: string) => `${projectId}/previews/${versionId}.png`,
 };

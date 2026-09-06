@@ -101,6 +101,7 @@ beforeEach(async () => {
     providerJobId: null,
     refinement: null,
     qaResult: null,
+    previewMeshPath: null,
     acceptedAt: null,
   });
 
@@ -118,6 +119,7 @@ beforeEach(async () => {
     providerJobId: null,
     refinement: null,
     qaResult: null,
+    previewMeshPath: null,
     acceptedAt: null,
   });
 

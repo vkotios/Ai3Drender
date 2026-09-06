@@ -35,6 +35,25 @@ export interface Blob {
  */
 export const SIGNED_URL_TTL_SECONDS = 3600;
 
+/**
+ * Which of a version's two mesh storage keys the real-time studio viewport
+ * (and, since it renders the same live scene, the in-browser path tracer)
+ * should display: the decimated preview `reconstruct` produced, or the
+ * full-detail mesh when there is no preview - simplification hasn't run yet,
+ * failed, or would not have reduced the mesh at all (see
+ * `lib/ai/mesh/simplify.ts`). The Blender render worker and glTF/OBJ export
+ * always read `meshPath` directly and never call this.
+ *
+ * Pure and import-safe from client components (unlike the rest of `lib/db`,
+ * which pulls in server-only Supabase client code) - see
+ * `components/studio/StudioCanvas.tsx`.
+ */
+export function viewportMeshPath(
+  version: Pick<AssetVersion, 'meshPath' | 'previewMeshPath'>,
+): string | null {
+  return version.previewMeshPath ?? version.meshPath;
+}
+
 export interface NewProject {
   ownerId: string;
   name: string;

@@ -89,6 +89,12 @@ describe('pipeline: analyze -> synthesize_views -> reconstruct', () => {
     expect(meshBlob!.bytes.byteLength).toBeGreaterThan(0);
     expect(meshBlob!.contentType).toBe('model/gltf-binary');
 
+    // The massing generator's boxes have nothing left for the simplifier to
+    // give up (see tests/ai/mesh/simplify.test.ts) - reconstruct correctly
+    // leaves previewMeshPath null rather than storing a second copy no
+    // lighter than the first, so the viewport falls back to meshPath.
+    expect(version!.previewMeshPath).toBeNull();
+
     const jobs = await store.listJobs(project.id);
     expect(jobs).toHaveLength(3); // analyze, synthesize_views, reconstruct
     expect(jobs.every((j) => j.status === 'succeeded')).toBe(true);

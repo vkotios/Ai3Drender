@@ -116,6 +116,7 @@ describe('GET /api/assets/:assetId/versions/:versionId/bom', () => {
       providerJobId: null,
       refinement: null,
       qaResult: null,
+      previewMeshPath: null,
       acceptedAt: null,
     });
   }

@@ -1,4 +1,5 @@
 import { ShareStudioShell } from '@/components/studio/ShareStudioShell';
+import { viewportMeshPath } from '@/lib/db';
 import { referencedAssetVersionIds, resolveShareToken } from '@/lib/share/access';
 import { shareBlobUrl } from '@/lib/share/blob';
 import type { LoadedVersion } from '@/lib/studio/store';
@@ -36,10 +37,12 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
   const versions: LoadedVersion[] = [];
   for (const id of versionIds) {
     const version = await store.getAssetVersion(id);
-    if (!version?.meshPath) continue;
+    if (!version) continue;
+    const meshKey = viewportMeshPath(version);
+    if (!meshKey) continue;
     versions.push({
       version,
-      meshUrl: await shareBlobUrl(store, token, version.meshPath),
+      meshUrl: await shareBlobUrl(store, token, meshKey),
       // MeshUrlBoundary's refresh route is session-gated, which an anonymous
       // share viewer never has - so there's nothing to schedule a proactive
       // refresh through here. A share link that outlives the signed URL's

@@ -48,6 +48,7 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       spec: makeFurnitureSpec(),
       views: [],
       meshPath: null,
+      previewMeshPath: null,
       previewPath: null,
       meshExtentMm: null,
       provider: 'stub',
@@ -84,6 +85,7 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       spec: makeFurnitureSpec(),
       views: [],
       meshPath: null,
+      previewMeshPath: null,
       previewPath: null,
       meshExtentMm: null,
       provider: 'stub',
@@ -124,6 +126,7 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       spec: makeFurnitureSpec(),
       views: [],
       meshPath: null,
+      previewMeshPath: null,
       previewPath: null,
       meshExtentMm: null,
       provider: 'stub',
@@ -193,6 +196,7 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       providerJobId: null,
       refinement: null,
       qaResult: null,
+      previewMeshPath: null,
       acceptedAt: null,
     });
 

@@ -70,6 +70,7 @@ beforeEach(async () => {
     providerJobId: null,
     refinement: null,
     qaResult: null,
+    previewMeshPath: null,
     acceptedAt: null,
   });
   scene = await store.createScene({

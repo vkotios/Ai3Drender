@@ -5,6 +5,7 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 
+import { viewportMeshPath } from '@/lib/db/store';
 import { useStudio } from '@/lib/studio/store';
 import type { SceneDoc } from '@/lib/types';
 
@@ -146,13 +147,18 @@ function SceneContents({
         {doc.nodes.map((node) => {
           if (node.kind === 'asset' && node.assetVersionId) {
             const loaded = versions[node.assetVersionId];
-            if (!loaded?.meshUrl || !loaded.version.meshPath) return null;
+            // Whichever mesh key `loaded.meshUrl` was actually resolved from -
+            // the decimated preview when reconstruct produced one, else the
+            // full-detail mesh - so MeshUrlBoundary refreshes the same object
+            // it originally loaded rather than silently swapping URLs later.
+            const meshKey = loaded && viewportMeshPath(loaded.version);
+            if (!loaded?.meshUrl || !meshKey) return null;
             return (
               <AssetNode
                 key={node.id}
                 node={node}
                 version={loaded.version}
-                meshPath={loaded.version.meshPath}
+                meshPath={meshKey}
                 meshUrl={loaded.meshUrl}
                 meshUrlExpiresAt={loaded.meshUrlExpiresAt}
                 selected={!presenting && node.id === selectedId}
