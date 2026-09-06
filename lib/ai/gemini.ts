@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 
 import { env, hasGemini } from '@/lib/env';
+import { resolveComponent } from '@/lib/scene/anchor';
 import type { VersionLookup } from '@/lib/scene/collisions';
 import {
   normalizeRawMutation,
@@ -9,7 +10,17 @@ import {
   type SceneCommandResult,
   type SceneMutation,
 } from '@/lib/scene/command';
-import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, QaResult, SceneDirection, SceneDoc } from '@/lib/types';
+import type {
+  FurnitureSpec,
+  MaterialLibraryEntry,
+  MaterialSpec,
+  MeshDefect,
+  MeshDefectCategory,
+  MeshDefectSeverity,
+  QaResult,
+  SceneDirection,
+  SceneDoc,
+} from '@/lib/types';
 
 import {
   offlineFurnitureSpec,
@@ -344,15 +355,74 @@ Compare them and judge how faithfully the mesh reproduces the piece in the photo
 
 Rules:
 - Score fidelity from 0 (no resemblance) to 100 (matches the photos closely) considering
-  silhouette, proportions, materials/colour and any visible construction detail.
+  silhouette, proportions, materials/colour and any visible construction detail. This score
+  is an overall summary - the specifics belong in the defects list below.
 - Ignore rendering differences that are not the mesh's fault: the renders use flat studio
   shading with no environment, so lighting, background and photographic finish never count
-  against the score.
-- List only concrete, specific mismatches (e.g. "missing left armrest", "legs read much
-  thicker than in the photos", "seat cushion is grey instead of the photographed tan"). Do
-  not restate the score as an issue, and leave the list empty when the mesh is a faithful
-  match.
+  against the score or the defects list.
+- List only concrete, specific mismatches as entries in the defects list (e.g. "missing left
+  armrest" as missing_geometry, "legs read much thicker than in the photos" as form_defect,
+  "seat cushion is grey instead of the photographed tan" as texture_defect). Do not restate
+  the score as a defect, and leave the list empty when the mesh is a faithful match.
+- Pick each defect's category from the fixed rubric in the schema - do not invent a new one.
+- When a defect clearly belongs to one specific named component, set componentName to that
+  component's exact name, copied verbatim from the "Named components" list below. Leave it
+  null when the defect spans the whole piece or several parts, or when nothing in the list
+  fits.
 `.trim();
+
+function formatKnownComponents(components: { name: string; role: string }[]): string {
+  if (components.length === 0) return '';
+  const rows = components.map((c) => `- "${c.name}" (role: ${c.role})`).join('\n');
+  return `Named components on this piece, for attributing a defect to a specific part:\n${rows}`;
+}
+
+const MESH_DEFECT_CATEGORIES = new Set<MeshDefectCategory>([
+  'fused_parts',
+  'incomplete_part',
+  'missing_geometry',
+  'extra_geometry',
+  'form_defect',
+  'surface_defect',
+  'texture_defect',
+]);
+
+const MESH_DEFECT_SEVERITIES = new Set<MeshDefectSeverity>(['minor', 'moderate', 'severe']);
+
+/** Raw shape Gemini actually returns for one defect, before validation. */
+interface RawMeshDefect {
+  category?: string;
+  description?: string;
+  severity?: string;
+  componentName?: string | null;
+}
+
+/**
+ * Validate and normalize the defects Gemini returned: drop anything with an
+ * unrecognised category or an empty description, default an unrecognised
+ * severity to 'moderate' rather than dropping an otherwise-real defect over
+ * it, and resolve `componentName` against the piece's actual components the
+ * same way a rebake target is (`resolveComponent`, issue #57) so a value the
+ * model invented or mis-copied never reaches the caller as if it were real.
+ */
+function normalizeDefects(raw: unknown, components: { name: string; role: string }[]): MeshDefect[] {
+  if (!Array.isArray(raw)) return [];
+  const defects: MeshDefect[] = [];
+  for (const entry of raw as RawMeshDefect[]) {
+    if (!entry || typeof entry !== 'object') continue;
+    const category = entry.category;
+    if (!category || !MESH_DEFECT_CATEGORIES.has(category as MeshDefectCategory)) continue;
+    const description = typeof entry.description === 'string' ? entry.description.trim() : '';
+    if (!description) continue;
+    const severity =
+      entry.severity && MESH_DEFECT_SEVERITIES.has(entry.severity as MeshDefectSeverity)
+        ? (entry.severity as MeshDefectSeverity)
+        : 'moderate';
+    const componentName = resolveComponent(entry.componentName ?? null, { components }).componentName;
+    defects.push({ category: category as MeshDefectCategory, description, severity, componentName });
+  }
+  return defects;
+}
 
 /**
  * Ask Gemini vision whether a reconstructed mesh actually looks like the
@@ -367,12 +437,14 @@ Rules:
 export async function evaluateReconstruction(
   sourcePhotos: ImageInput[],
   meshViews: { angle: string; image: GeneratedImage }[],
-  spec: Pick<FurnitureSpec, 'displayName' | 'category' | 'summary'>,
+  spec: Pick<FurnitureSpec, 'displayName' | 'category' | 'summary' | 'components'>,
 ): Promise<QaResult> {
   const usablePhotos = sourcePhotos.filter((i) => i.role !== 'mood');
   if (!hasGemini || usablePhotos.length === 0 || meshViews.length === 0) {
     return offlineQaResult();
   }
+
+  const componentBlock = formatKnownComponents(spec.components ?? []);
 
   const response = await ai().models.generateContent({
     model: env.geminiTextModel,
@@ -382,6 +454,7 @@ export async function evaluateReconstruction(
         parts: [
           { text: QA_PROMPT },
           { text: `The piece is a ${spec.category}: ${spec.displayName}. ${spec.summary}` },
+          ...(componentBlock ? [{ text: componentBlock }] : []),
           { text: 'Original photographs:' },
           ...usablePhotos.map(imagePart),
           { text: 'Rendered views of the reconstructed mesh:' },
@@ -396,11 +469,11 @@ export async function evaluateReconstruction(
     },
   });
 
-  const parsed = parseJson<{ score: number; issues: string[] }>(response.text ?? '', 'evaluateReconstruction');
+  const parsed = parseJson<{ score: number; defects: unknown }>(response.text ?? '', 'evaluateReconstruction');
   const score = Number.isFinite(parsed.score) ? Math.min(100, Math.max(0, parsed.score)) : 0;
   return {
     score,
-    issues: Array.isArray(parsed.issues) ? parsed.issues.filter(Boolean) : [],
+    defects: normalizeDefects(parsed.defects, spec.components ?? []),
     source: 'gemini',
   };
 }

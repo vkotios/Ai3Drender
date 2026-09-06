@@ -112,6 +112,60 @@ export const FURNITURE_SPEC_SCHEMA = {
   ],
 } as const;
 
+/**
+ * One categorized defect (issue #56). `category` is a small closed enum -
+ * see `MeshDefectCategory` in lib/types.ts for what each value means - rather
+ * than free text, so the model reliably picks from a fixed rubric instead of
+ * inventing its own wording for the same handful of failure modes.
+ */
+const meshDefect = {
+  type: 'OBJECT',
+  properties: {
+    category: {
+      type: 'STRING',
+      format: 'enum',
+      enum: [
+        'fused_parts',
+        'incomplete_part',
+        'missing_geometry',
+        'extra_geometry',
+        'form_defect',
+        'surface_defect',
+        'texture_defect',
+      ],
+      description:
+        'fused_parts = distinct parts read as one merged blob; incomplete_part = a part is ' +
+        'present but truncated/thin/not fully formed; missing_geometry = a part or feature the ' +
+        'photos show is entirely absent; extra_geometry = geometry present that should not be ' +
+        '(duplicated part, floating artifact); form_defect = overall silhouette/proportions read ' +
+        'wrong though every part is present; surface_defect = local surface noise/warping/holes ' +
+        'on an otherwise correct part; texture_defect = geometry is right but colour/material/ ' +
+        'finish reads wrong.',
+    },
+    description: {
+      type: 'STRING',
+      description:
+        'One concrete sentence, e.g. "the left armrest is fused into the backrest with no seam".',
+    },
+    severity: {
+      type: 'STRING',
+      format: 'enum',
+      enum: ['minor', 'moderate', 'severe'],
+      description: 'How much this defect would matter to a buyer looking closely at the piece.',
+    },
+    componentName: {
+      type: 'STRING',
+      nullable: true,
+      description:
+        'The exact name of the affected component, copied verbatim from the "Named components" ' +
+        'list, when this defect is localized to one specific part. Null when it affects the ' +
+        'whole piece or spans several parts equally (e.g. an overall proportion issue), or when ' +
+        'no named component list was supplied.',
+    },
+  },
+  required: ['category', 'description', 'severity', 'componentName'],
+} as const;
+
 export const QA_RESULT_SCHEMA = {
   type: 'OBJECT',
   properties: {
@@ -120,18 +174,18 @@ export const QA_RESULT_SCHEMA = {
       description:
         '0 to 100 fidelity score: how closely the rendered mesh views match the source ' +
         'photographs in silhouette, proportions, materials and colour. 100 = indistinguishable ' +
-        'from the photos; 0 = no resemblance at all.',
+        'from the photos; 0 = no resemblance at all. An overall summary - put the specifics in ' +
+        'defects below.',
     },
-    issues: {
+    defects: {
       type: 'ARRAY',
-      items: { type: 'STRING' },
+      items: meshDefect,
       description:
-        'Specific mismatches between the mesh and the photos, e.g. "missing armrest", ' +
-        '"legs are too thick", "seat cushion is the wrong colour". Empty array when the mesh ' +
-        'is a faithful match.',
+        'Concrete, categorized mismatches between the mesh and the photos. Empty array when the ' +
+        'mesh is a faithful match. Do not restate the score as a defect.',
     },
   },
-  required: ['score', 'issues'],
+  required: ['score', 'defects'],
 } as const;
 
 /**
