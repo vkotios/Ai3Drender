@@ -69,6 +69,7 @@ beforeEach(async () => {
     provider: 'stub',
     providerJobId: null,
     refinement: null,
+    qaResult: null,
     acceptedAt: null,
   });
   scene = await store.createScene({

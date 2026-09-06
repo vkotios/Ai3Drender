@@ -112,6 +112,28 @@ export const FURNITURE_SPEC_SCHEMA = {
   ],
 } as const;
 
+export const QA_RESULT_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    score: {
+      type: 'NUMBER',
+      description:
+        '0 to 100 fidelity score: how closely the rendered mesh views match the source ' +
+        'photographs in silhouette, proportions, materials and colour. 100 = indistinguishable ' +
+        'from the photos; 0 = no resemblance at all.',
+    },
+    issues: {
+      type: 'ARRAY',
+      items: { type: 'STRING' },
+      description:
+        'Specific mismatches between the mesh and the photos, e.g. "missing armrest", ' +
+        '"legs are too thick", "seat cushion is the wrong colour". Empty array when the mesh ' +
+        'is a faithful match.',
+    },
+  },
+  required: ['score', 'issues'],
+} as const;
+
 /**
  * Just the PBR fields, for a targeted single-material correction
  * (`correctMaterial` in lib/ai/gemini.ts). Deliberately narrower than

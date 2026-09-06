@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { offlineFurnitureSpec, offlineMaterialCorrection, offlineSceneDirection } from '@/lib/ai/offline';
+import {
+  offlineFurnitureSpec,
+  offlineMaterialCorrection,
+  offlineQaResult,
+  offlineSceneDirection,
+} from '@/lib/ai/offline';
 import { makeMaterial } from '../fixtures';
 
 const HEX = /^#[0-9a-f]{6}$/i;
@@ -141,5 +146,14 @@ describe('offlineSceneDirection', () => {
     const direction = offlineSceneDirection(['Lounge Chair', 'Side Table']);
     expect(direction.rationale).toMatch(/Lounge Chair, Side Table/);
     expect(direction.paletteHex.every((hex) => HEX.test(hex))).toBe(true);
+  });
+});
+
+describe('offlineQaResult', () => {
+  it("is marked 'offline' rather than pretending to be a real vision-model verdict", () => {
+    const result = offlineQaResult();
+    expect(result.source).toBe('offline');
+    expect(result.issues).toEqual([]);
+    expect(result).toEqual(offlineQaResult()); // deterministic
   });
 });

@@ -97,6 +97,7 @@ async function createVersion(overrides: Partial<AssetVersion> = {}): Promise<Ass
     provider: 'stub',
     providerJobId: null,
     refinement: null,
+    qaResult: null,
     acceptedAt: null,
     ...overrides,
   });

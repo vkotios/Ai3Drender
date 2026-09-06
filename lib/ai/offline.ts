@@ -1,4 +1,4 @@
-import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, SceneDirection } from '@/lib/types';
+import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, QaResult, SceneDirection } from '@/lib/types';
 
 /**
  * Deterministic stand-in for the Gemini vision pass, used when GEMINI_API_KEY
@@ -270,6 +270,24 @@ export function offlineFurnitureSpec(
     reconstructionNotes:
       'Preserve the silhouette and leg taper. Do not merge separate cushions into one volume. ' +
       'Keep any gap between backrest and seat open rather than filling it.',
+  };
+}
+
+/**
+ * Deterministic stand-in for the perceptual QA vision pass. There is no model
+ * to actually compare the mesh against the photos, so this does not fabricate
+ * a real fidelity judgement - `score`/`issues` are placeholders, never shown
+ * as if they were a real check. `source: 'offline'` is what callers (the
+ * pipeline, the UI badge) must key off of: it is what marks this as "not
+ * actually assessed" rather than "assessed and found perfect". Consistent
+ * with `offlineFurnitureSpec` producing a clearly-labelled placeholder rather
+ * than throwing, so the pipeline keeps running end to end without a key.
+ */
+export function offlineQaResult(): QaResult {
+  return {
+    score: 100,
+    issues: [],
+    source: 'offline',
   };
 }
 

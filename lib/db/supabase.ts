@@ -101,6 +101,7 @@ const toVersion = (r: Row): AssetVersion => ({
   provider: r.provider,
   providerJobId: r.provider_job_id,
   refinement: r.refinement,
+  qaResult: r.qa_result ?? null,
   acceptedAt: r.accepted_at,
   createdAt: r.created_at,
 });
@@ -426,6 +427,7 @@ export class SupabaseStore implements Store {
         provider: input.provider,
         provider_job_id: input.providerJobId,
         refinement: input.refinement,
+        qa_result: input.qaResult,
         accepted_at: input.acceptedAt,
       })
       .select()
@@ -459,6 +461,7 @@ export class SupabaseStore implements Store {
     if (patch.provider !== undefined) update.provider = patch.provider;
     if (patch.providerJobId !== undefined) update.provider_job_id = patch.providerJobId;
     if (patch.refinement !== undefined) update.refinement = patch.refinement;
+    if (patch.qaResult !== undefined) update.qa_result = patch.qaResult;
     if (patch.acceptedAt !== undefined) update.accepted_at = patch.acceptedAt;
     const res = await this.db.from('asset_versions').update(update).eq('id', id).select().single();
     return toVersion(unwrap('updateAssetVersion', res));

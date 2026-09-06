@@ -79,6 +79,10 @@ describe('pipeline: analyze -> synthesize_views -> reconstruct', () => {
     // The offline analyzer infers a category from the filename ("sofa-front.jpg").
     expect(version!.spec.category).toBe('sofa');
     expect(version!.spec.dimensionConfidence).toBe('rough');
+    // No GEMINI_API_KEY in this test env: the perceptual QA step still runs
+    // and stores a result, but it's the documented offline placeholder, not a
+    // real vision-model verdict.
+    expect(version!.qaResult).toEqual({ score: 100, issues: [], source: 'offline' });
 
     const meshBlob = await store.getBlob(version!.meshPath!);
     expect(meshBlob).not.toBeNull();
