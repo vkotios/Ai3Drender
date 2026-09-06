@@ -1,3 +1,4 @@
+import { blobUrlWithExpiry } from '@/lib/db';
 import { json, withAsset } from '@/lib/api';
 
 type Params = { params: Promise<{ assetId: string }> };
@@ -7,13 +8,21 @@ export async function GET(_request: Request, { params }: Params) {
   return withAsset(assetId, async ({ store }, asset) => {
     const versions = await store.listAssetVersions(asset.id);
     // Version compare needs a fetchable mesh (and, when cached, a preview) for
-    // every version, not just the current one.
+    // every version, not just the current one - each with its own expiry, so
+    // a version preloaded ahead of time still gets refreshed before it goes
+    // stale (see MeshUrlBoundary), the same as the version staged up front.
     const resolved = await Promise.all(
-      versions.map(async (version) => ({
-        version,
-        meshUrl: version.meshPath ? await store.blobUrl(version.meshPath) : null,
-        previewUrl: version.previewPath ? await store.blobUrl(version.previewPath) : null,
-      })),
+      versions.map(async (version) => {
+        const mesh = version.meshPath
+          ? await blobUrlWithExpiry(store, version.meshPath)
+          : { url: null, expiresAt: null };
+        return {
+          version,
+          meshUrl: mesh.url,
+          meshUrlExpiresAt: mesh.expiresAt,
+          previewUrl: version.previewPath ? await store.blobUrl(version.previewPath) : null,
+        };
+      }),
     );
     return json({
       asset,

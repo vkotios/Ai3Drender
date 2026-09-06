@@ -250,6 +250,7 @@ function MaterialInspector({ node }: { node: SceneNode }) {
 interface VersionOption {
   version: AssetVersion;
   meshUrl: string | null;
+  meshUrlExpiresAt: string | null;
 }
 
 /**
