@@ -134,7 +134,9 @@ async function main() {
 
   step('Drain the queue: analyze -> synthesize_views -> reconstruct, all offline/stub');
   for (let i = 0; i < 5; i += 1) {
-    const { processed } = await asJson<{ processed: number }>(await tickJobsRoute());
+    const { processed } = await asJson<{ processed: number }>(
+      await tickJobsRoute(new Request('http://local/api/jobs/tick', { method: 'POST' })),
+    );
     if (processed === 0) break;
   }
 
