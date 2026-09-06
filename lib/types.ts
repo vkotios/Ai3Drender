@@ -441,16 +441,70 @@ export interface SceneLight {
   distance: number;
 }
 
+/** A point in the booth's floor plane, metres - the same XZ convention as Vec3's x/z. */
+export interface FootprintPoint {
+  x: number;
+  z: number;
+}
+
+/**
+ * One wall run traced against a floor-plan underlay, independent of the
+ * boundary polygon it may or may not close - see `BoothFootprint`.
+ */
+export interface FootprintWall {
+  start: FootprintPoint;
+  end: FootprintPoint;
+  /** An open run reads as an aisle, same meaning as EnvironmentSettings.walls' flags. */
+  open: boolean;
+}
+
+/**
+ * The flat, to-scale reference image a footprint was traced against - issue
+ * #52 Phase A ("reference underlay + manual trace"), see
+ * docs/proposals/cad-floor-plan-import.md. Image-only for this first cut
+ * (PNG/JPEG); a rasterized-PDF or DXF-extents underlay is a documented
+ * follow-up, not built here - see that route's own comment.
+ */
+export interface FloorPlanUnderlay {
+  /** Blob storage key - see lib/pipeline/storage-keys.ts's floorPlan(). */
+  imagePath: string;
+  /** Real-world size of the full source image, metres, set by the user at import time. */
+  widthM: number;
+  heightM: number;
+  /** Where the image's centre sits in booth-local XZ space, metres. */
+  centerX: number;
+  centerZ: number;
+  /** Rotation about Y, radians - squares up a photographed plan without re-uploading it. */
+  rotationY: number;
+}
+
+/**
+ * A manually traced booth footprint (issue #52 Phase A). Optional and
+ * additive: absent on every scene saved before this shipped, and the whole
+ * rendering chain (Booth.tsx, lib/render/build-scene.ts) falls back to the
+ * fixed boothWidth/boothDepth/walls rectangle below whenever this is null,
+ * undefined, or its boundary doesn't have enough points to enclose an area -
+ * see lib/scene/footprint.ts's isValidFootprintBoundary.
+ */
+export interface BoothFootprint {
+  /** Ordered polygon boundary vertices, booth-local XZ metres. Rendered as the floor. */
+  boundary: FootprintPoint[];
+  /** Wall runs traced against the boundary - not required to close it. */
+  walls: FootprintWall[];
+  /** Null when the polygon was traced freehand with no reference image behind it. */
+  underlay: FloorPlanUnderlay | null;
+}
+
 export interface EnvironmentSettings {
   presetId: string;
   floorMaterialId: string;
   floorColorHex: string;
   wallColorHex: string;
-  /** Metres. Booth footprint. */
+  /** Metres. Booth footprint. Ignored (but kept in sync, see patchEnvironment callers) once `footprint` is set. */
   boothWidth: number;
   boothDepth: number;
   boothHeight: number;
-  /** Which of the four walls are built. Open sides read as aisles. */
+  /** Which of the four walls are built. Open sides read as aisles. Ignored once `footprint` is set. */
   walls: { back: boolean; left: boolean; right: boolean };
   /** drei environment preset name driving image-based lighting. */
   hdriPreset: string;
@@ -458,6 +512,12 @@ export interface EnvironmentSettings {
   ambientIntensity: number;
   backgroundColorHex: string;
   showGrid: boolean;
+  /**
+   * A traced floor-plan footprint, replacing the fixed rectangle above when
+   * present - see `BoothFootprint`. Optional so every scene saved before
+   * issue #52 shipped keeps loading and rendering exactly as before.
+   */
+  footprint?: BoothFootprint | null;
 }
 
 export interface CameraSettings {

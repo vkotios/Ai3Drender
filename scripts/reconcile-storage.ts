@@ -22,6 +22,15 @@ interface ViewLike {
   path: string;
 }
 
+/** The one path a scene's `doc` can carry - a traced floor plan's reference underlay (issue #52). */
+interface SceneDocLike {
+  environment?: { footprint?: { underlay?: { imagePath?: string } | null } | null };
+}
+
+function footprintUnderlayPath(doc: SceneDocLike | null | undefined): string | null {
+  return doc?.environment?.footprint?.underlay?.imagePath ?? null;
+}
+
 /** Every path a local-mode row can carry, read straight off the JSON store. */
 async function livePathsLocal(): Promise<Set<string>> {
   const dbFile = path.join(process.cwd(), 'storage-local', 'db.json');
@@ -30,6 +39,7 @@ async function livePathsLocal(): Promise<Set<string>> {
     sourceImages?: { path: string }[];
     assetVersions?: { views?: ViewLike[]; meshPath?: string | null; previewMeshPath?: string | null }[];
     sceneRenders?: { path: string }[];
+    scenes?: { doc: SceneDocLike }[];
   };
 
   const paths = new Set<string>();
@@ -40,6 +50,10 @@ async function livePathsLocal(): Promise<Set<string>> {
     if (version.previewMeshPath) paths.add(version.previewMeshPath);
   }
   for (const render of db.sceneRenders ?? []) paths.add(render.path);
+  for (const scene of db.scenes ?? []) {
+    const underlayPath = footprintUnderlayPath(scene.doc);
+    if (underlayPath) paths.add(underlayPath);
+  }
   return paths;
 }
 
@@ -50,15 +64,17 @@ async function livePathsLocal(): Promise<Set<string>> {
  */
 async function livePathsSupabase(): Promise<Set<string>> {
   const admin = createSupabaseAdminClient();
-  const [images, versions, renders] = await Promise.all([
+  const [images, versions, renders, scenes] = await Promise.all([
     admin.from('source_images').select('path'),
     admin.from('asset_versions').select('views, mesh_path, preview_mesh_path'),
     admin.from('scene_renders').select('path'),
+    admin.from('scenes').select('doc'),
   ]);
   for (const [what, res] of [
     ['source_images', images],
     ['asset_versions', versions],
     ['scene_renders', renders],
+    ['scenes', scenes],
   ] as const) {
     if (res.error) throw new Error(`reconcile: reading ${what}: ${res.error.message}`);
   }
@@ -71,6 +87,10 @@ async function livePathsSupabase(): Promise<Set<string>> {
     if (row.preview_mesh_path) paths.add(row.preview_mesh_path as string);
   }
   for (const row of renders.data ?? []) paths.add(row.path as string);
+  for (const row of scenes.data ?? []) {
+    const underlayPath = footprintUnderlayPath(row.doc as SceneDocLike);
+    if (underlayPath) paths.add(underlayPath);
+  }
   return paths;
 }
 

@@ -2,9 +2,11 @@
 
 import { create } from 'zustand';
 
+import { footprintBounds, wallsFromBoundary, MIN_FOOTPRINT_POINTS } from '@/lib/scene/footprint';
 import type {
   Annotation,
   AssetVersion,
+  FootprintPoint,
   Scene,
   SceneDoc,
   SceneNode,
@@ -34,8 +36,12 @@ export interface LoadedVersion {
  * gizmo or a pinning affordance for it: used for a 'viewer'-role share link,
  * where the surrounding UI offers no note-pinning or sign-off controls either
  * (see ShareStudioShell).
+ * 'floorplan' traces a booth footprint against an optional reference
+ * underlay (issue #52 Phase A): a click adds a boundary vertex instead of
+ * selecting or pinning anything - see `floorplanTrace` and
+ * `components/studio/FloorPlanTrace.tsx`.
  */
-export type StudioMode = 'layout' | 'comment' | 'view';
+export type StudioMode = 'layout' | 'comment' | 'view' | 'floorplan';
 
 /** A click in comment mode, held until the note is written or discarded. */
 export interface PendingPin {
@@ -86,6 +92,15 @@ interface StudioState {
    * See AssetNode's pointer handlers.
    */
   drawing: boolean;
+  /**
+   * Boundary vertices collected so far while `mode === 'floorplan'` - empty
+   * whenever tracing isn't in progress. Held here rather than on the
+   * component that renders the click target, so both the viewport (which
+   * adds points and draws the in-progress polygon) and the inspector (which
+   * shows a running count and a Finish/Undo/Cancel control) share one copy.
+   * See `addTracePoint` / `finishFloorplanTrace`.
+   */
+  floorplanTrace: FootprintPoint[];
 
   load(scene: Scene, versions: LoadedVersion[], annotations?: Annotation[]): void;
   setMode(mode: StudioMode): void;
@@ -96,6 +111,19 @@ interface StudioState {
   select(id: string | null): void;
   setTransforming(value: boolean): void;
   setDrawing(value: boolean): void;
+  addTracePoint(point: FootprintPoint): void;
+  undoTracePoint(): void;
+  /**
+   * Closes the traced boundary into `environment.footprint`, deriving one
+   * closed wall per edge (see `wallsFromBoundary`) and syncing
+   * `boothWidth`/`boothDepth` to the polygon's bounding box so every other
+   * consumer that still reads those two fields for a coarse booth size
+   * (contact-shadow scale, the default camera math, the server export's
+   * camera far-plane) keeps working unchanged - see EnvironmentSettings'
+   * own doc comment. No-ops (and does not change mode) if fewer than
+   * `MIN_FOOTPRINT_POINTS` were traced.
+   */
+  finishFloorplanTrace(): void;
   setDoc(doc: SceneDoc): void;
   patchEnvironment(patch: Partial<SceneDoc['environment']>): void;
   patchCamera(patch: Partial<SceneDoc['camera']>): void;
@@ -119,6 +147,7 @@ export const useStudio = create<StudioState>((set) => ({
   dirty: false,
   transforming: false,
   drawing: false,
+  floorplanTrace: [],
 
   load: (scene, versions, annotations = []) =>
     set({
@@ -130,13 +159,15 @@ export const useStudio = create<StudioState>((set) => ({
       selectedAnnotationId: null,
       pendingPin: null,
       drawing: false,
+      floorplanTrace: [],
       dirty: false,
     }),
 
   // Leaving comment mode drops a half-written pin (and any stroke in
   // progress) rather than letting it reappear unexpectedly the next time the
-  // mode is entered.
-  setMode: (mode) => set({ mode, pendingPin: null, drawing: false }),
+  // mode is entered; leaving floorplan mode the same way drops whatever was
+  // traced but not yet finished.
+  setMode: (mode) => set({ mode, pendingPin: null, drawing: false, floorplanTrace: [] }),
   setSelectionMode: (selectionMode) => set({ selectionMode }),
   setPendingPin: (pendingPin) => set({ pendingPin }),
   selectAnnotation: (selectedAnnotationId) => set({ selectedAnnotationId }),
@@ -145,6 +176,37 @@ export const useStudio = create<StudioState>((set) => ({
   select: (selectedId) => set({ selectedId }),
   setTransforming: (transforming) => set({ transforming }),
   setDrawing: (drawing) => set({ drawing }),
+
+  addTracePoint: (point) => set((state) => ({ floorplanTrace: [...state.floorplanTrace, point] })),
+  undoTracePoint: () => set((state) => ({ floorplanTrace: state.floorplanTrace.slice(0, -1) })),
+
+  finishFloorplanTrace: () =>
+    set((state) => {
+      const boundary = state.floorplanTrace;
+      if (!state.doc || boundary.length < MIN_FOOTPRINT_POINTS) return state;
+      const bounds = footprintBounds(boundary);
+      return {
+        doc: {
+          ...state.doc,
+          environment: {
+            ...state.doc.environment,
+            footprint: {
+              // Keep whatever underlay was already set - tracing only ever
+              // replaces the boundary/walls, never the reference image.
+              underlay: state.doc.environment.footprint?.underlay ?? null,
+              boundary,
+              walls: wallsFromBoundary(boundary),
+            },
+            boothWidth: bounds.width,
+            boothDepth: bounds.depth,
+          },
+        },
+        floorplanTrace: [],
+        mode: 'layout',
+        dirty: true,
+      };
+    }),
+
   setDoc: (doc) => set({ doc, dirty: true }),
 
   patchEnvironment: (patch) =>

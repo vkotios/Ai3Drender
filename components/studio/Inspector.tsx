@@ -6,10 +6,11 @@ import { ConfidenceBadge } from '@/components/ConfidenceBadge';
 import { Badge, Button, Field, Panel, Slider, TextInput } from '@/components/ui';
 import { createAssetNode, createSceneDoc } from '@/lib/scene/defaults';
 import { overlappingNodeNames } from '@/lib/scene/collisions';
+import { MIN_FOOTPRINT_POINTS, isValidFootprintBoundary } from '@/lib/scene/footprint';
 import { orphanedOverrideKeys } from '@/lib/scene/materialOverrides';
 import { BOOTH_PRESETS, PROP_DEFINITIONS, getPreset } from '@/lib/scene/presets';
 import { useStudio, type LoadedVersion } from '@/lib/studio/store';
-import type { AssetVersion, SceneNode } from '@/lib/types';
+import type { AssetVersion, BoothFootprint, SceneNode } from '@/lib/types';
 
 import { SplitCompareOverlay } from './CompareViewport';
 
@@ -552,24 +553,32 @@ function EnvironmentInspector() {
 
       <Panel title="Booth size">
         <div className="space-y-3">
-          <Slider
-            label="Width"
-            value={environment.boothWidth}
-            min={3}
-            max={20}
-            step={0.5}
-            unit=" m"
-            onChange={(v) => patchEnvironment({ boothWidth: v })}
-          />
-          <Slider
-            label="Depth"
-            value={environment.boothDepth}
-            min={3}
-            max={20}
-            step={0.5}
-            unit=" m"
-            onChange={(v) => patchEnvironment({ boothDepth: v })}
-          />
+          {isValidFootprintBoundary(environment.footprint?.boundary) ? (
+            <p className="text-[11px] leading-relaxed text-shell-400">
+              Width and depth are set by the traced footprint below - see Floor plan.
+            </p>
+          ) : (
+            <>
+              <Slider
+                label="Width"
+                value={environment.boothWidth}
+                min={3}
+                max={20}
+                step={0.5}
+                unit=" m"
+                onChange={(v) => patchEnvironment({ boothWidth: v })}
+              />
+              <Slider
+                label="Depth"
+                value={environment.boothDepth}
+                min={3}
+                max={20}
+                step={0.5}
+                unit=" m"
+                onChange={(v) => patchEnvironment({ boothDepth: v })}
+              />
+            </>
+          )}
           <Slider
             label="Height"
             value={environment.boothHeight}
@@ -581,6 +590,8 @@ function EnvironmentInspector() {
           />
         </div>
       </Panel>
+
+      <FloorPlanPanel />
 
       <Panel title="Lighting">
         <div className="space-y-3">
@@ -631,6 +642,229 @@ function EnvironmentInspector() {
         </p>
       </Panel>
     </div>
+  );
+}
+
+/** Natural-size dimensions of an image file, read without ever uploading it. */
+function readImageDimensions(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Could not read image dimensions'));
+    };
+    img.src = url;
+  });
+}
+
+/**
+ * Floor-plan import (issue #52 Phase A): upload a reference image, set its
+ * real-world scale, then trace the booth boundary against it in the
+ * viewport - see FloorPlanTrace.tsx. Image-only for this first cut (see
+ * app/api/scenes/[sceneId]/floorplan/route.ts's own comment on why PDF/DXF
+ * aren't handled here).
+ */
+function FloorPlanPanel() {
+  const doc = useStudio((s) => s.doc)!;
+  const scene = useStudio((s) => s.scene);
+  const mode = useStudio((s) => s.mode);
+  const setMode = useStudio((s) => s.setMode);
+  const patchEnvironment = useStudio((s) => s.patchEnvironment);
+  const trace = useStudio((s) => s.floorplanTrace);
+  const undoTracePoint = useStudio((s) => s.undoTracePoint);
+  const finishFloorplanTrace = useStudio((s) => s.finishFloorplanTrace);
+
+  const [pending, setPending] = useState<{ file: File; naturalWidth: number; naturalHeight: number } | null>(
+    null,
+  );
+  const [widthInput, setWidthInput] = useState('8');
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const footprint = doc.environment.footprint ?? null;
+  const underlay = footprint?.underlay ?? null;
+  const hasBoundary = isValidFootprintBoundary(footprint?.boundary);
+  const tracing = mode === 'floorplan';
+
+  async function onFileChosen(file: File) {
+    setError(null);
+    try {
+      const dims = await readImageDimensions(file);
+      setPending({ file, naturalWidth: dims.width, naturalHeight: dims.height });
+    } catch {
+      setError('Could not read that image');
+    }
+  }
+
+  async function confirmUpload() {
+    if (!pending || !scene) return;
+    const widthM = Number(widthInput);
+    if (!Number.isFinite(widthM) || widthM <= 0) {
+      setError('Enter the real-world width of the image in metres');
+      return;
+    }
+    setUploading(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append('file', pending.file);
+      if (underlay) form.append('previousPath', underlay.imagePath);
+      const response = await fetch(`/api/scenes/${scene.id}/floorplan`, { method: 'POST', body: form });
+      if (!response.ok) {
+        setError(((await response.json()) as { error?: string }).error ?? 'Could not upload floor plan');
+        return;
+      }
+      const { path } = (await response.json()) as { path: string };
+      const heightM = widthM * (pending.naturalHeight / pending.naturalWidth);
+      const next: BoothFootprint = {
+        boundary: footprint?.boundary ?? [],
+        walls: footprint?.walls ?? [],
+        // Placed at the booth origin with no rotation for this first cut -
+        // the user traces wherever the image lands rather than repositioning
+        // it first. See FloorPlanUnderlay's doc comment.
+        underlay: { imagePath: path, widthM, heightM, centerX: 0, centerZ: 0, rotationY: 0 },
+      };
+      patchEnvironment({ footprint: next });
+      setPending(null);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function removeFloorPlan() {
+    patchEnvironment({ footprint: null });
+    if (tracing) setMode('layout');
+  }
+
+  return (
+    <Panel title="Floor plan">
+      <div className="space-y-3">
+        <p className="text-[11px] leading-relaxed text-shell-400">
+          Trace the booth footprint from a scanned or photographed floor plan instead of the fixed
+          rectangle above - see the Booth size panel, which stops applying once a footprint is traced.
+        </p>
+
+        {error && <p className="text-[11px] text-red-400">{error}</p>}
+
+        {pending ? (
+          <div className="space-y-2 rounded-md border border-shell-800 p-2.5">
+            <p className="truncate text-xs text-shell-300">{pending.file.name}</p>
+            <Field label="Real-world width of this image" hint="Height is kept in proportion automatically.">
+              <div className="flex items-center gap-2">
+                <TextInput
+                  type="number"
+                  min={0.1}
+                  step={0.1}
+                  value={widthInput}
+                  onChange={(e) => setWidthInput(e.target.value)}
+                />
+                <span className="text-xs text-shell-400">m</span>
+              </div>
+            </Field>
+            <div className="flex gap-2">
+              <Button size="sm" variant="primary" onClick={() => void confirmUpload()} disabled={uploading}>
+                {uploading ? 'Uploading…' : 'Use this scale'}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setPending(null)} disabled={uploading}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            <label className="inline-flex cursor-pointer items-center rounded-md border border-shell-700 bg-shell-800 px-2.5 py-1 text-xs font-medium text-shell-100 transition hover:border-shell-600 hover:bg-shell-700">
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                hidden
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void onFileChosen(file);
+                  e.target.value = '';
+                }}
+              />
+              {underlay ? 'Replace image' : 'Import floor plan'}
+            </label>
+            {underlay && (
+              <Button size="sm" variant="danger" onClick={removeFloorPlan}>
+                Remove
+              </Button>
+            )}
+          </div>
+        )}
+
+        {underlay && (
+          <p className="text-[11px] text-shell-400">
+            Underlay: {underlay.widthM.toFixed(1)}m × {underlay.heightM.toFixed(1)}m
+          </p>
+        )}
+
+        {tracing ? (
+          <div className="space-y-2 rounded-md border border-amber-700/60 bg-amber-950/30 p-2.5">
+            <p className="text-[11px] leading-relaxed text-amber-300">
+              Click in the viewport to place boundary points{underlay ? ' against the underlay' : ''}. Double-click,
+              or Finish below, to close the polygon.
+            </p>
+            <p className="text-[11px] text-shell-400">
+              {trace.length} point{trace.length === 1 ? '' : 's'}
+              {trace.length > 0 && trace.length < MIN_FOOTPRINT_POINTS
+                ? ` · ${MIN_FOOTPRINT_POINTS - trace.length} more to close`
+                : ''}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" onClick={undoTracePoint} disabled={trace.length === 0}>
+                Undo point
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={finishFloorplanTrace}
+                disabled={trace.length < MIN_FOOTPRINT_POINTS}
+              >
+                Finish boundary
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setMode('layout')}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" onClick={() => setMode('floorplan')}>
+              {hasBoundary ? 'Re-trace boundary' : underlay ? 'Trace boundary' : 'Trace without an image'}
+            </Button>
+            {hasBoundary && (
+              <span className="text-[11px] text-shell-400">{footprint!.boundary.length} points traced</span>
+            )}
+          </div>
+        )}
+
+        {hasBoundary && (
+          <div className="space-y-1.5 border-t border-shell-800 pt-2.5">
+            <p className="text-[11px] font-medium text-shell-300">Wall runs</p>
+            {footprint!.walls.map((wall, i) => (
+              <label key={i} className="flex items-center gap-1.5 text-xs text-shell-300">
+                <input
+                  type="checkbox"
+                  checked={!wall.open}
+                  onChange={(e) => {
+                    const walls = footprint!.walls.map((w, j) => (j === i ? { ...w, open: !e.target.checked } : w));
+                    patchEnvironment({ footprint: { ...footprint!, walls } });
+                  }}
+                  className="accent-shell-100"
+                />
+                Edge {i + 1} closed
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+    </Panel>
   );
 }
 

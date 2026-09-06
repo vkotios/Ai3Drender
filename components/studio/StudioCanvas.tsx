@@ -11,6 +11,7 @@ import type { SceneDoc } from '@/lib/types';
 
 import { AssetNode } from './AssetNode';
 import { Booth } from './Booth';
+import { FloorPlanTrace } from './FloorPlanTrace';
 import { Lighting } from './Lighting';
 import { PathTracer } from './PathTracer';
 import { PropNode } from './PropNode';
@@ -144,6 +145,10 @@ function SceneContents({
     <>
       <group ref={rootRef} name="scene-root">
         <Booth environment={doc.environment} showGrid={!presenting} />
+        {/* Not rendered while path-tracing: the live path tracer reads this
+            scene directly rather than through the export filter that would
+            otherwise strip a helper node - see FloorPlanTrace's own comment. */}
+        {!presenting && <FloorPlanTrace />}
 
         {doc.nodes.map((node) => {
           if (node.kind === 'asset' && node.assetVersionId) {

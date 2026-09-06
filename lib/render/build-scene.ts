@@ -34,10 +34,12 @@ import { ALL_EXTENSIONS, KHRLightsPunctual, Light } from '@gltf-transform/extens
 import { getBounds, mergeDocuments, unpartition } from '@gltf-transform/functions';
 
 import { PROP_DEFINITIONS } from '@/lib/scene/presets';
+import { isValidFootprintBoundary, wallSegmentPlacement } from '@/lib/scene/footprint';
 import type { EnvironmentSettings, SceneDoc, SceneNode } from '@/lib/types';
 
 import { createBoxMaterial, createBoxNode } from './box-mesh';
 import { eulerXYZToQuaternion, lookAtQuaternion, type QuatTuple, type Vec3Tuple } from './gltf-math';
+import { createPolygonFloorNode } from './polygon-mesh';
 
 /** Matches `components/studio/Booth.tsx`'s WALL_THICKNESS - kept in sync manually, see note there. */
 const WALL_THICKNESS = 0.06;
@@ -179,7 +181,61 @@ function hexToLinear(hex: string): Vec3Tuple {
   return [toLinear(((n >> 16) & 255) / 255), toLinear(((n >> 8) & 255) / 255), toLinear((n & 255) / 255)];
 }
 
+/**
+ * Floor + walls for a traced footprint (issue #52 Phase A), used instead of
+ * the fixed rectangle below whenever `environment.footprint` has a usable
+ * boundary. Wall height still comes from `environment.boothHeight` - the
+ * traced polygon only ever replaces the *plan* the fixed model draws, not
+ * the wall-height control in the inspector.
+ */
+function addFootprintGeometry(document: Document, environment: EnvironmentSettings): GltfNode[] {
+  const footprint = environment.footprint;
+  if (!footprint || !isValidFootprintBoundary(footprint.boundary)) return [];
+  const nodes: GltfNode[] = [];
+
+  const floorMaterial = createBoxMaterial(document, {
+    name: 'Floor material',
+    baseColorHex: environment.floorColorHex,
+    roughness: 0.55,
+    metalness: 0,
+    // A hand-traced polygon can come in either winding order depending on
+    // which way the user clicked around it - double-sided sidesteps that
+    // rather than policing it, see lib/scene/footprint.ts's signedArea2.
+    doubleSided: true,
+  });
+  const floorNode = createPolygonFloorNode(document, 'Floor', footprint.boundary, floorMaterial);
+  if (floorNode) nodes.push(floorNode);
+
+  const wallMaterial = createBoxMaterial(document, {
+    name: 'Wall material',
+    baseColorHex: environment.wallColorHex,
+    roughness: 0.92,
+    metalness: 0,
+  });
+  const h = environment.boothHeight;
+  footprint.walls.forEach((wall, i) => {
+    if (wall.open) return;
+    const placement = wallSegmentPlacement(wall);
+    if (placement.length < 1e-6) return; // a degenerate (zero-length) traced segment - nothing to build.
+    const inner = createBoxNode(
+      document,
+      { name: `Footprint Wall ${i}`, size: [placement.length, h, WALL_THICKNESS], center: [0, h / 2, 0] },
+      wallMaterial,
+    );
+    nodes.push(
+      inner
+        .setTranslation([placement.centerX, 0, placement.centerZ])
+        .setRotation(eulerXYZToQuaternion(0, placement.rotationY, 0)),
+    );
+  });
+
+  return nodes;
+}
+
 function addEnvironmentGeometry(document: Document, environment: EnvironmentSettings): GltfNode[] {
+  const footprintNodes = addFootprintGeometry(document, environment);
+  if (footprintNodes.length > 0) return footprintNodes;
+
   const { boothWidth: w, boothDepth: d, boothHeight: h, walls } = environment;
   const nodes: GltfNode[] = [];
 

@@ -40,6 +40,8 @@ export interface BoxMaterialSpec {
   baseColorHex: string;
   roughness: number;
   metalness: number;
+  /** Only true for a traced footprint's floor (lib/render/polygon-mesh.ts) - see createBoxMaterial. */
+  doubleSided?: boolean;
 }
 
 function hexToLinear(hex: string): [number, number, number] {
@@ -60,7 +62,7 @@ export function createBoxMaterial(document: Document, spec: BoxMaterialSpec): Ma
     .setBaseColorFactor([r, g, b, 1])
     .setRoughnessFactor(Math.min(1, Math.max(0, spec.roughness)))
     .setMetallicFactor(Math.min(1, Math.max(0, spec.metalness)))
-    .setDoubleSided(false);
+    .setDoubleSided(spec.doubleSided ?? false);
 }
 
 /** Build a standalone box mesh + node (not yet attached to any Scene). */
