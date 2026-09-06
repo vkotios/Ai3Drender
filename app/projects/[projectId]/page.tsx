@@ -20,10 +20,11 @@ export default async function ProjectPage({
   if (!project) notFound();
 
   const { store } = session;
-  const [images, assets, scenes] = await Promise.all([
+  const [images, assets, scenes, libraryEntries] = await Promise.all([
     store.listSourceImages(project.id),
     store.listAssets(project.id),
     store.listScenes(project.id),
+    store.listMaterialLibraryEntries(project.ownerId),
   ]);
 
   // Resolve thumbnails and current versions server-side so the workbench
@@ -60,6 +61,7 @@ export default async function ProjectPage({
         initialAssets={rows}
         initialScenes={scenes}
         imageUrls={imageUrls}
+        initialLibraryEntries={libraryEntries}
       />
     </main>
   );

@@ -9,6 +9,7 @@ import type {
   AssetVersion,
   FurnitureAsset,
   Job,
+  MaterialLibraryEntry,
   Project,
   Scene,
   SourceImage,
@@ -36,17 +37,20 @@ export function ProjectWorkbench({
   initialAssets,
   initialScenes,
   imageUrls,
+  initialLibraryEntries,
 }: {
   project: Project;
   initialImages: SourceImage[];
   initialAssets: AssetRow[];
   initialScenes: Scene[];
   imageUrls: Record<string, string>;
+  initialLibraryEntries: MaterialLibraryEntry[];
 }) {
   const [images, setImages] = useState(initialImages);
   const [assets, setAssets] = useState(initialAssets);
   const [scenes, setScenes] = useState(initialScenes);
   const [urls, setUrls] = useState(imageUrls);
+  const [libraryEntries] = useState(initialLibraryEntries);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pieceName, setPieceName] = useState('');
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -223,7 +227,12 @@ export function ProjectWorkbench({
             ) : (
               <ul className="space-y-2">
                 {assets.map((row) => (
-                  <AssetCard key={row.asset.id} row={row} onChanged={poll} />
+                  <AssetCard
+                    key={row.asset.id}
+                    row={row}
+                    libraryEntries={libraryEntries}
+                    onChanged={poll}
+                  />
                 ))}
               </ul>
             )}
@@ -306,7 +315,15 @@ export function ProjectWorkbench({
 }
 
 /** One reconstructed piece, with its spec summary and a refinement box. */
-function AssetCard({ row, onChanged }: { row: AssetRow; onChanged: () => void }) {
+function AssetCard({
+  row,
+  libraryEntries,
+  onChanged,
+}: {
+  row: AssetRow;
+  libraryEntries: MaterialLibraryEntry[];
+  onChanged: () => void;
+}) {
   const { asset, currentVersion } = row;
   const [instruction, setInstruction] = useState('');
   const [rebuild, setRebuild] = useState(false);
@@ -333,6 +350,28 @@ function AssetCard({ row, onChanged }: { row: AssetRow; onChanged: () => void })
   async function accept() {
     if (!currentVersion) return;
     await fetch(`/api/assets/${asset.id}/versions/${currentVersion.id}/accept`, { method: 'POST' });
+    await onChanged();
+  }
+
+  async function bindMaterial(materialId: string, libraryEntryId: string) {
+    if (!currentVersion || !libraryEntryId) return;
+    await fetch(
+      `/api/assets/${asset.id}/versions/${currentVersion.id}/materials/${materialId}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ libraryEntryId }),
+      },
+    );
+    await onChanged();
+  }
+
+  async function promoteMaterial(materialId: string) {
+    if (!currentVersion) return;
+    await fetch(
+      `/api/assets/${asset.id}/versions/${currentVersion.id}/materials/${materialId}/promote`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    );
     await onChanged();
   }
 
@@ -368,21 +407,57 @@ function AssetCard({ row, onChanged }: { row: AssetRow; onChanged: () => void })
       </div>
 
       {currentVersion && (
-        <div className="mt-2 flex flex-wrap gap-1">
+        <ul className="mt-2 space-y-1">
           {currentVersion.spec.materials.map((material) => (
-            <span
+            <li
               key={material.id}
-              className="inline-flex items-center gap-1.5 rounded border border-shell-800 px-1.5 py-0.5 text-[11px] text-shell-300"
-              title={`${material.finish} · roughness ${material.roughness}`}
+              className="flex flex-wrap items-center gap-1.5 rounded border border-shell-800 px-1.5 py-1 text-[11px] text-shell-300"
             >
               <span
-                className="inline-block h-2.5 w-2.5 rounded-sm"
+                className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
                 style={{ background: material.baseColorHex }}
               />
-              {material.name}
-            </span>
+              <span title={`${material.finish} · roughness ${material.roughness}`}>
+                {material.name}
+              </span>
+              {material.libraryEntryId ? (
+                <Badge tone="good">library</Badge>
+              ) : material.invented ? (
+                <Badge tone="warn">new</Badge>
+              ) : null}
+
+              {!currentVersion.acceptedAt && (
+                <span className="ml-auto flex items-center gap-1">
+                  {material.invented && !material.libraryEntryId && (
+                    <Button size="sm" variant="ghost" onClick={() => promoteMaterial(material.id)}>
+                      Promote
+                    </Button>
+                  )}
+                  {libraryEntries.length > 0 && (
+                    <select
+                      defaultValue=""
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        e.target.value = '';
+                        if (value) bindMaterial(material.id, value);
+                      }}
+                      className="rounded border border-shell-700 bg-shell-850 px-1 py-0.5 text-[11px] text-shell-200 focus:border-shell-400 focus:outline-none"
+                    >
+                      <option value="" disabled>
+                        Bind to…
+                      </option>
+                      {libraryEntries.map((entry) => (
+                        <option key={entry.id} value={entry.id}>
+                          {entry.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </span>
+              )}
+            </li>
           ))}
-        </div>
+        </ul>
       )}
 
       {open && (

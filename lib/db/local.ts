@@ -11,6 +11,7 @@ import type {
   FurnitureAsset,
   Job,
   JobStatus,
+  MaterialLibraryEntry,
   Project,
   Scene,
   SceneDoc,
@@ -20,10 +21,13 @@ import type {
 } from '@/lib/types';
 import type {
   Blob,
+  MaterialLibraryEntryPatch,
+  MaterialLibraryUsage,
   NewAnnotation,
   NewAsset,
   NewAssetVersion,
   NewJob,
+  NewMaterialLibraryEntry,
   NewSceneRender,
   NewProject,
   NewScene,
@@ -41,6 +45,7 @@ interface Db {
   jobs: Job[];
   annotations: Annotation[];
   sceneRenders: SceneRender[];
+  materialLibraryEntries: MaterialLibraryEntry[];
 }
 
 const EMPTY: Db = {
@@ -53,6 +58,7 @@ const EMPTY: Db = {
   jobs: [],
   annotations: [],
   sceneRenders: [],
+  materialLibraryEntries: [],
 };
 
 const ROOT = path.join(process.cwd(), 'storage-local');
@@ -602,5 +608,92 @@ export class LocalStore implements Store {
   async blobUrl(key: string): Promise<string> {
     // Served by app/api/blob/[...key]/route.ts.
     return `/api/blob/${key.split('/').map(encodeURIComponent).join('/')}`;
+  }
+
+  /* Material library --------------------------------------------------------- */
+
+  createMaterialLibraryEntry(input: NewMaterialLibraryEntry): Promise<MaterialLibraryEntry> {
+    return this.mutate((db) => {
+      const entry: MaterialLibraryEntry = {
+        ...input,
+        id: randomUUID(),
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      db.materialLibraryEntries.push(entry);
+      return entry;
+    });
+  }
+
+  async getMaterialLibraryEntry(id: Uuid): Promise<MaterialLibraryEntry | null> {
+    const db = await this.read();
+    return db.materialLibraryEntries.find((e) => e.id === id) ?? null;
+  }
+
+  async listMaterialLibraryEntries(
+    ownerId: string,
+    options?: { includeArchived?: boolean },
+  ): Promise<MaterialLibraryEntry[]> {
+    const db = await this.read();
+    return db.materialLibraryEntries
+      .filter((e) => e.ownerId === ownerId && (options?.includeArchived || !e.archivedAt))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  updateMaterialLibraryEntry(
+    id: Uuid,
+    patch: MaterialLibraryEntryPatch,
+  ): Promise<MaterialLibraryEntry> {
+    return this.mutate((db) => {
+      const entry = db.materialLibraryEntries.find((e) => e.id === id);
+      if (!entry) throw new Error(`material library entry ${id} not found`);
+      Object.assign(entry, patch, { updatedAt: now() });
+      return entry;
+    });
+  }
+
+  deleteMaterialLibraryEntry(id: Uuid): Promise<void> {
+    return this.mutate((db) => {
+      db.materialLibraryEntries = db.materialLibraryEntries.filter((e) => e.id !== id);
+    });
+  }
+
+  async listMaterialLibraryUsage(
+    ownerId: string,
+    libraryEntryId: Uuid,
+  ): Promise<MaterialLibraryUsage[]> {
+    const db = await this.read();
+    const ownedProjectIds = new Set(
+      db.projects.filter((p) => p.ownerId === ownerId).map((p) => p.id),
+    );
+
+    const usage: MaterialLibraryUsage[] = [];
+    for (const asset of db.assets) {
+      if (!ownedProjectIds.has(asset.projectId)) continue;
+      const project = db.projects.find((p) => p.id === asset.projectId);
+      if (!project) continue;
+
+      for (const version of db.assetVersions) {
+        if (version.assetId !== asset.id) continue;
+        for (const material of version.spec.materials) {
+          if (material.libraryEntryId !== libraryEntryId) continue;
+          usage.push({
+            projectId: project.id,
+            projectName: project.name,
+            assetId: asset.id,
+            assetName: asset.name,
+            assetVersionId: version.id,
+            versionNumber: version.versionNumber,
+            isCurrentVersion: asset.currentVersionId === version.id,
+            materialId: material.id,
+            materialName: material.name,
+            components: version.spec.components
+              .filter((c) => c.materialId === material.id)
+              .map((c) => ({ name: c.name, role: c.role })),
+          });
+        }
+      }
+    }
+    return usage;
   }
 }

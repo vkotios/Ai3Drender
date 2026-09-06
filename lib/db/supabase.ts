@@ -5,8 +5,10 @@ import type {
   AnnotationStatus,
   AssetVersion,
   FurnitureAsset,
+  FurnitureSpec,
   Job,
   JobStatus,
+  MaterialLibraryEntry,
   Project,
   Scene,
   SceneRender,
@@ -15,10 +17,13 @@ import type {
 } from '@/lib/types';
 import type {
   Blob,
+  MaterialLibraryEntryPatch,
+  MaterialLibraryUsage,
   NewAnnotation,
   NewAsset,
   NewAssetVersion,
   NewJob,
+  NewMaterialLibraryEntry,
   NewSceneRender,
   NewProject,
   NewScene,
@@ -150,6 +155,25 @@ const toJob = (r: Row): Job => ({
   maxAttempts: r.max_attempts ?? 3,
   leaseExpiresAt: r.lease_expires_at ?? null,
   nextAttemptAt: r.next_attempt_at ?? null,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+});
+
+const toMaterialLibraryEntry = (r: Row): MaterialLibraryEntry => ({
+  id: r.id,
+  ownerId: r.owner_id,
+  name: r.name,
+  code: r.code,
+  kind: r.kind,
+  baseColorHex: r.base_color_hex,
+  roughness: Number(r.roughness),
+  metalness: Number(r.metalness),
+  sheen: Number(r.sheen),
+  clearcoat: Number(r.clearcoat),
+  finish: r.finish,
+  notes: r.notes,
+  swatchPath: r.swatch_path,
+  archivedAt: r.archived_at,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
@@ -677,5 +701,140 @@ export class SupabaseStore implements Store {
     const { data, error } = await this.db.storage.from(BUCKET).createSignedUrl(key, 3600);
     if (error || !data) throw new Error(`blobUrl ${key}: ${error?.message ?? 'no url'}`);
     return data.signedUrl;
+  }
+
+  /* Material library --------------------------------------------------------- */
+
+  async createMaterialLibraryEntry(input: NewMaterialLibraryEntry): Promise<MaterialLibraryEntry> {
+    const res = await this.db
+      .from('material_library_entries')
+      .insert({
+        owner_id: input.ownerId,
+        name: input.name,
+        code: input.code,
+        kind: input.kind,
+        base_color_hex: input.baseColorHex,
+        roughness: input.roughness,
+        metalness: input.metalness,
+        sheen: input.sheen,
+        clearcoat: input.clearcoat,
+        finish: input.finish,
+        notes: input.notes,
+        swatch_path: input.swatchPath,
+        archived_at: input.archivedAt,
+      })
+      .select()
+      .single();
+    return toMaterialLibraryEntry(unwrap('createMaterialLibraryEntry', res));
+  }
+
+  async getMaterialLibraryEntry(id: Uuid): Promise<MaterialLibraryEntry | null> {
+    const res = await this.db
+      .from('material_library_entries')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+    if (res.error) throw new Error(`getMaterialLibraryEntry: ${res.error.message}`);
+    return res.data ? toMaterialLibraryEntry(res.data) : null;
+  }
+
+  async listMaterialLibraryEntries(
+    ownerId: string,
+    options?: { includeArchived?: boolean },
+  ): Promise<MaterialLibraryEntry[]> {
+    let q = this.db.from('material_library_entries').select('*').eq('owner_id', ownerId);
+    if (!options?.includeArchived) q = q.is('archived_at', null);
+    const res = await q.order('name');
+    return unwrap('listMaterialLibraryEntries', res).map(toMaterialLibraryEntry);
+  }
+
+  async updateMaterialLibraryEntry(
+    id: Uuid,
+    patch: MaterialLibraryEntryPatch,
+  ): Promise<MaterialLibraryEntry> {
+    const update: Row = {};
+    if (patch.name !== undefined) update.name = patch.name;
+    if (patch.code !== undefined) update.code = patch.code;
+    if (patch.kind !== undefined) update.kind = patch.kind;
+    if (patch.baseColorHex !== undefined) update.base_color_hex = patch.baseColorHex;
+    if (patch.roughness !== undefined) update.roughness = patch.roughness;
+    if (patch.metalness !== undefined) update.metalness = patch.metalness;
+    if (patch.sheen !== undefined) update.sheen = patch.sheen;
+    if (patch.clearcoat !== undefined) update.clearcoat = patch.clearcoat;
+    if (patch.finish !== undefined) update.finish = patch.finish;
+    if (patch.notes !== undefined) update.notes = patch.notes;
+    if (patch.swatchPath !== undefined) update.swatch_path = patch.swatchPath;
+    if (patch.archivedAt !== undefined) update.archived_at = patch.archivedAt;
+    const res = await this.db
+      .from('material_library_entries')
+      .update(update)
+      .eq('id', id)
+      .select()
+      .single();
+    return toMaterialLibraryEntry(unwrap('updateMaterialLibraryEntry', res));
+  }
+
+  async deleteMaterialLibraryEntry(id: Uuid): Promise<void> {
+    const { error } = await this.db.from('material_library_entries').delete().eq('id', id);
+    if (error) throw new Error(`deleteMaterialLibraryEntry: ${error.message}`);
+  }
+
+  async listMaterialLibraryUsage(
+    ownerId: string,
+    libraryEntryId: Uuid,
+  ): Promise<MaterialLibraryUsage[]> {
+    const projectsRes = await this.db.from('projects').select('id, name').eq('owner_id', ownerId);
+    const projects = unwrap('listMaterialLibraryUsage', projectsRes);
+    if (projects.length === 0) return [];
+    const projectById = new Map(projects.map((p) => [p.id as string, p]));
+
+    const assetsRes = await this.db
+      .from('furniture_assets')
+      .select('id, name, project_id, current_version_id')
+      .in('project_id', [...projectById.keys()]);
+    const assets = unwrap('listMaterialLibraryUsage', assetsRes);
+    if (assets.length === 0) return [];
+    const assetById = new Map(assets.map((a) => [a.id as string, a]));
+
+    const versionsRes = await this.db
+      .from('asset_versions')
+      .select('id, asset_id, version_number, spec')
+      .in('asset_id', [...assetById.keys()]);
+    const versions = unwrap('listMaterialLibraryUsage', versionsRes);
+
+    // A jsonb containment query (`spec->'materials' @> ...`) could filter this
+    // server-side, but matching "some element of the array has this
+    // libraryEntryId" precisely - without also matching on every other field
+    // of that element - is easy to get subtly wrong with `@>`'s per-element
+    // semantics. Row counts here are one manufacturer's catalogue against its
+    // own asset versions, not a table scan, so filtering in application code
+    // (mirroring LocalStore) is simpler and just as correct.
+    const usage: MaterialLibraryUsage[] = [];
+    for (const row of versions) {
+      const asset = assetById.get(row.asset_id as string);
+      if (!asset) continue;
+      const project = projectById.get(asset.project_id as string);
+      if (!project) continue;
+      const spec = row.spec as FurnitureSpec;
+
+      for (const material of spec.materials ?? []) {
+        if (material.libraryEntryId !== libraryEntryId) continue;
+        usage.push({
+          projectId: project.id,
+          projectName: project.name,
+          assetId: asset.id,
+          assetName: asset.name,
+          assetVersionId: row.id,
+          versionNumber: row.version_number,
+          isCurrentVersion: asset.current_version_id === row.id,
+          materialId: material.id,
+          materialName: material.name,
+          components: (spec.components ?? [])
+            .filter((c) => c.materialId === material.id)
+            .map((c) => ({ name: c.name, role: c.role })),
+        });
+      }
+    }
+    return usage;
   }
 }

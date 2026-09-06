@@ -18,7 +18,15 @@ export default async function HomePage() {
       <header className="mb-10">
         <div className="mb-2 flex items-start justify-between gap-4">
           <h1 className="text-2xl font-semibold tracking-tight">ai3drender</h1>
-          <AuthStatus email={session.viewer.email} />
+          <div className="flex items-center gap-4">
+            <Link
+              href="/materials"
+              className="text-xs text-shell-400 transition hover:text-shell-100"
+            >
+              Material library →
+            </Link>
+            <AuthStatus email={session.viewer.email} />
+          </div>
         </div>
         <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-shell-400">
           Turn furniture photographs into specified, versioned 3D assets, then stage them in an
