@@ -115,6 +115,7 @@ describe('GET /api/assets/:assetId/versions/:versionId/bom', () => {
       provider: 'stub',
       providerJobId: null,
       refinement: null,
+      qaResult: null,
       acceptedAt: null,
     });
   }
