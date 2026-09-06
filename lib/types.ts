@@ -612,6 +612,8 @@ export interface SceneShareLink {
   expiresAt: IsoDate | null;
   revokedAt: IsoDate | null;
   lastAccessedAt: IsoDate | null;
+  /** Set when the reminder sweep last emailed the owner about this link. See `Store.markShareLinkReminded`. */
+  lastReminderSentAt: IsoDate | null;
   createdAt: IsoDate;
 }
 

@@ -17,6 +17,8 @@ for (const key of [
   'MESHY_API_KEY',
   'TRIPO_API_KEY',
   'FAL_API_KEY',
+  'SLACK_WEBHOOK_URL',
+  'RESEND_API_KEY',
 ]) {
   delete process.env[key];
 }
