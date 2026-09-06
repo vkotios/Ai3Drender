@@ -33,6 +33,18 @@ export const env = {
   falMeshModel: clean(process.env.FAL_MESH_MODEL) ?? 'fal-ai/hunyuan3d-v21',
 
   appUrl: clean(process.env.NEXT_PUBLIC_APP_URL) ?? 'http://localhost:3000',
+
+  /** Executable invoked for offline Blender/Cycles renders. */
+  blenderBin: clean(process.env.BLENDER_BIN) ?? 'blender',
+  /** Wall-clock budget for one offline render before the child process is killed. */
+  blenderTimeoutMs: Number(clean(process.env.BLENDER_TIMEOUT_MS)) || 20 * 60_000,
+  /** 'CPU' everywhere by default; set 'GPU' on a worker with a configured Cycles device. */
+  blenderDevice: (clean(process.env.BLENDER_DEVICE) ?? 'CPU').toUpperCase(),
+
+  // Lets a scheduled trigger (Vercel Cron, or any external cron service) call
+  // POST /api/jobs/tick without a signed-in session. Unset => that route only
+  // accepts the studio's own authenticated poll, same as before this existed.
+  cronSecret: clean(process.env.CRON_SECRET),
 } as const;
 
 /** True when Supabase is configured; otherwise the on-disk LocalStore is used. */

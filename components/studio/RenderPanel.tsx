@@ -164,7 +164,13 @@ export function RenderPanel({
                     className="aspect-video w-full rounded-md border border-shell-800 bg-shell-850 object-cover transition group-hover:border-shell-600"
                   />
                   <span className="mt-1 flex items-center justify-between text-[10px] text-shell-400">
-                    <span>{render.kind === 'concept' ? 'Concept' : 'Path-traced'}</span>
+                    <span>
+                      {render.kind === 'concept'
+                        ? 'Concept'
+                        : render.kind === 'render'
+                          ? 'Offline render'
+                          : 'Path-traced'}
+                    </span>
                     {render.samples !== null && <span>{render.samples} spp</span>}
                   </span>
                 </a>

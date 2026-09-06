@@ -84,6 +84,31 @@ export function describeWholePart(instanceCount: number): string {
   return instanceCount > 1 ? `as a whole, all ${instanceCount} instances` : 'as a whole';
 }
 
+/**
+ * Whether an anchor point still falls within the piece's bounding box.
+ *
+ * Used when carrying a note forward to a version whose dimensions changed:
+ * if the piece shrank enough that the anchor now sits outside it, the part
+ * it was pinned to was likely resized away or removed entirely, and the pin
+ * is no longer trustworthy as-is. A small margin absorbs the fact that
+ * `dimensions` is itself an estimate, not an exact mesh bound.
+ */
+export function anchorWithinBounds(point: Vec3, dimensions: Dimensions3): boolean {
+  const halfWidthM = dimensions.widthMm / 2000;
+  const halfDepthM = dimensions.depthMm / 2000;
+  const heightM = dimensions.heightMm / 1000;
+  const marginM = 0.02;
+
+  return (
+    point.x >= -halfWidthM - marginM &&
+    point.x <= halfWidthM + marginM &&
+    point.z >= -halfDepthM - marginM &&
+    point.z <= halfDepthM + marginM &&
+    point.y >= -marginM &&
+    point.y <= heightM + marginM
+  );
+}
+
 /** One line per note, as handed to the model. */
 export function formatAnnotationForPrompt(annotation: {
   body: string;

@@ -6,17 +6,54 @@ import type { ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 
 import { baseName } from '@/lib/scene/anchor';
+import { resolveMaterialOverrideKey } from '@/lib/scene/materialOverrides';
 import type { Annotation, AssetVersion, SceneNode } from '@/lib/types';
 import { useStudio, type PendingPin, type StudioMode } from '@/lib/studio/store';
 
+import { MeshUrlBoundary } from './MeshUrlBoundary';
+
+interface AssetNodeProps {
+  node: SceneNode;
+  version: AssetVersion;
+  /** Storage key the mesh URL was resolved from - what a refresh re-resolves. */
+  meshPath: string;
+  meshUrl: string;
+  /** Null in local-disk mode: that URL is stable and never needs refreshing. */
+  meshUrlExpiresAt: string | null;
+  selected: boolean;
+  mode: StudioMode;
+  annotations: Annotation[];
+  pendingPin: PendingPin | null;
+  selectedAnnotationId: string | null;
+  onSelect: () => void;
+  onPin: (pin: Omit<PendingPin, 'nodeId' | 'assetId' | 'assetVersionId'>) => void;
+  onSelectAnnotation: (id: string) => void;
+}
+
 /**
  * One reconstructed furniture piece in the scene.
+ *
+ * Wraps the actual mesh in `MeshUrlBoundary` so a signed mesh URL resolved
+ * when the page rendered gets refreshed before it goes stale (and retried
+ * once if it is ever used past that anyway), rather than staying good for
+ * only as long as its one-hour signature - see that component for why.
+ */
+export function AssetNode({ meshPath, meshUrl, meshUrlExpiresAt, ...rest }: AssetNodeProps) {
+  return (
+    <MeshUrlBoundary meshKey={meshPath} initialUrl={meshUrl} initialExpiresAt={meshUrlExpiresAt}>
+      {(url) => <AssetMesh {...rest} meshUrl={url} />}
+    </MeshUrlBoundary>
+  );
+}
+
+/**
+ * The actual mesh, scaled and grounded.
  *
  * Two things have to happen to a vendor mesh before it can share a scene with
  * anything else: it must be scaled to real-world size, and it must be grounded
  * so its lowest point sits on y=0 rather than wherever the vendor's origin fell.
  */
-export function AssetNode({
+function AssetMesh({
   node,
   version,
   meshUrl,
@@ -28,19 +65,7 @@ export function AssetNode({
   onSelect,
   onPin,
   onSelectAnnotation,
-}: {
-  node: SceneNode;
-  version: AssetVersion;
-  meshUrl: string;
-  selected: boolean;
-  mode: StudioMode;
-  annotations: Annotation[];
-  pendingPin: PendingPin | null;
-  selectedAnnotationId: string | null;
-  onSelect: () => void;
-  onPin: (pin: Omit<PendingPin, 'nodeId' | 'assetId' | 'assetVersionId'>) => void;
-  onSelectAnnotation: (id: string) => void;
-}) {
+}: Omit<AssetNodeProps, 'meshPath' | 'meshUrlExpiresAt'>) {
   const { scene } = useGLTF(meshUrl);
   const groupRef = useRef<THREE.Group>(null);
   const selectionMode = useStudio((s) => s.selectionMode);
@@ -81,14 +106,18 @@ export function AssetNode({
     return { root, fit, offset };
   }, [scene, version.meshExtentMm, version.spec.dimensions]);
 
-  // Material overrides are keyed by the material name as it appears in the
-  // mesh, which is what the spec's material names map to for our own output.
+  // Material overrides are keyed by MaterialSpec.id, which survives a
+  // refinement renaming the material - the mesh's own material name does not.
+  // Resolve each mesh material back to the spec id that currently carries its
+  // name, and only fall back to the raw mesh name when nothing in the spec
+  // matches it (a vendor mesh whose material names we do not control).
   useMemo(() => {
     prepared.root.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       for (const material of materials) {
-        const override = node.materialOverrides[material.name];
+        const key = resolveMaterialOverrideKey(material.name, version.spec.materials);
+        const override = node.materialOverrides[key];
         if (!override || !(material instanceof THREE.MeshStandardMaterial)) continue;
         if (override.baseColorHex) material.color.set(override.baseColorHex);
         if (override.roughness !== undefined) material.roughness = override.roughness;
@@ -96,7 +125,7 @@ export function AssetNode({
         material.needsUpdate = true;
       }
     });
-  }, [prepared.root, node.materialOverrides]);
+  }, [prepared.root, node.materialOverrides, version.spec.materials]);
 
   /**
    * A click either selects the piece or pins a note - to the exact spot, or

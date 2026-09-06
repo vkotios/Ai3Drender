@@ -15,6 +15,12 @@ import type {
 export interface LoadedVersion {
   version: AssetVersion;
   meshUrl: string | null;
+  /**
+   * When `meshUrl` goes stale, so it can be refreshed ahead of that rather
+   * than trusted forever - see `components/studio/MeshUrlBoundary.tsx`. Null
+   * in local-disk mode, where the URL is stable and never expires.
+   */
+  meshUrlExpiresAt: string | null;
 }
 
 /**
@@ -174,8 +180,16 @@ export const useStudio = create<StudioState>((set) => ({
   registerVersion: (loaded) =>
     set((state) => ({ versions: { ...state.versions, [loaded.version.id]: loaded } })),
 
+  // A scene is passed on every successful save and restore, and its `doc` is
+  // the server's own record of what got written - syncing local `doc` from it
+  // (rather than trusting whatever was in flight) is what makes a restore's
+  // content actually show up in the viewport.
   markSaved: (scene) =>
-    set((state) => ({ dirty: false, scene: scene ?? state.scene })),
+    set((state) => ({
+      dirty: false,
+      scene: scene ?? state.scene,
+      doc: scene ? scene.doc : state.doc,
+    })),
 }));
 
 /** Stable no-op selector helpers, so components subscribe to the least state. */
