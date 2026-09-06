@@ -1,11 +1,13 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AssetThumbnail } from '@/components/AssetThumbnail';
 import { ConfidenceBadge } from '@/components/ConfidenceBadge';
 import { Badge, Button, Empty, Field, Panel, TextInput } from '@/components/ui';
+import { readImageDimensions } from '@/lib/studio/imageDimensions';
 import type {
   AssetStatus,
   AssetVersion,
@@ -79,7 +81,10 @@ export function ProjectWorkbench({
   const [jobs, setJobs] = useState<Job[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [generatingFloorPlan, setGeneratingFloorPlan] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const floorPlanInput = useRef<HTMLInputElement>(null);
+  const router = useRouter();
 
   const anyBusy = assets.some((row) => BUSY_STATUSES.includes(row.asset.status));
 
@@ -170,6 +175,56 @@ export function ProjectWorkbench({
     }
     const scene: Scene = await response.json();
     setScenes((current) => [scene, ...current]);
+  }
+
+  /** Poll a single job (ticking the queue each time) until it leaves 'queued'/'running'. */
+  async function waitForFloorPlanJob(jobId: string): Promise<Job> {
+    for (;;) {
+      await fetch('/api/jobs/tick', { method: 'POST' });
+      const list: Job[] = await fetch(`/api/projects/${project.id}/jobs`).then((r) => r.json());
+      setJobs(list);
+      const found = list.find((j) => j.id === jobId);
+      if (found && found.status !== 'queued' && found.status !== 'running') return found;
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+
+  /**
+   * Issue #58's "one click" counterpart to the manual floor-plan trace
+   * (issue #52, in the studio's own Floor plan panel): upload the image,
+   * wait for the `floorplan_scene` job it queues to finish building a
+   * populated stand, then open it in the studio - where the traced boundary
+   * and placed furniture can be corrected with those same manual tools.
+   */
+  async function autoPopulateFromFloorPlan(file: File) {
+    setError(null);
+    setGeneratingFloorPlan(true);
+    try {
+      const dims = await readImageDimensions(file);
+      const form = new FormData();
+      form.append('file', file);
+      form.append('imageWidthPx', String(dims.width));
+      form.append('imageHeightPx', String(dims.height));
+      const response = await fetch(`/api/projects/${project.id}/scenes/from-floor-plan`, {
+        method: 'POST',
+        body: form,
+      });
+      if (!response.ok) throw new Error((await response.json()).error ?? 'Could not start');
+      const { job } = (await response.json()) as { job: Job };
+
+      const finished = await waitForFloorPlanJob(job.id);
+      if (finished.status === 'failed') {
+        throw new Error(finished.error ?? 'Could not generate a stand from that floor plan');
+      }
+      const sceneId = (finished.output as { sceneId?: string } | null)?.sceneId;
+      if (!sceneId) throw new Error('The floor plan job finished with no stand to open');
+      router.push(`/projects/${project.id}/scenes/${sceneId}`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not generate a stand from that floor plan');
+    } finally {
+      setGeneratingFloorPlan(false);
+      if (floorPlanInput.current) floorPlanInput.current.value = '';
+    }
   }
 
   const toggle = (id: string) =>
@@ -347,14 +402,34 @@ export function ProjectWorkbench({
           <Panel
             title={`Stands (${scenes.length})`}
             actions={
-              <Button size="sm" onClick={createScene}>
-                New
-              </Button>
+              <div className="flex gap-2">
+                <label
+                  title="Auto-populate a new stand from a floor-plan image - traces the boundary and places furniture automatically (issue #58)"
+                  className={`inline-flex items-center rounded-md border border-shell-700 bg-shell-800 px-2.5 py-1 text-xs font-medium text-shell-100 transition hover:border-shell-600 hover:bg-shell-700 ${generatingFloorPlan ? 'cursor-wait opacity-70' : 'cursor-pointer'}`}
+                >
+                  <input
+                    ref={floorPlanInput}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    hidden
+                    disabled={generatingFloorPlan}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) void autoPopulateFromFloorPlan(file);
+                    }}
+                  />
+                  {generatingFloorPlan ? 'Generating…' : 'From floor plan'}
+                </label>
+                <Button size="sm" onClick={createScene}>
+                  New
+                </Button>
+              </div>
             }
           >
             {scenes.length === 0 ? (
               <p className="text-xs text-shell-400">
-                A stand is an exhibition environment you place finished pieces into.
+                A stand is an exhibition environment you place finished pieces into. Start from
+                scratch, or upload a floor plan above to auto-populate one.
               </p>
             ) : (
               <ul className="space-y-1.5">

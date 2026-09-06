@@ -176,6 +176,35 @@ export function wallSegmentPlacement(wall: FootprintWall): WallPlacement {
 }
 
 /**
+ * Convert one point read off a floor-plan image (a `u`/`v` fraction of its
+ * width/height, both clamped to 0..1) into booth-local XZ metres, given the
+ * image's resolved real-world size - the same size a `FloorPlanUnderlay`
+ * carries as `widthM`/`heightM`, and the same centred-at-origin placement
+ * `FloorPlanPanel` gives a freshly uploaded underlay (`centerX`/`centerZ` 0,
+ * no rotation).
+ *
+ * Used by `generateSceneFromFloorPlan` (issue #58) to turn a vision model's
+ * image-fraction reading of a boundary/placement into the metres this
+ * module's other exports (and everything downstream of them) expect. The
+ * left/right mapping is the obvious one; top/bottom follows how a plan is
+ * normally read - the top edge (v=0) is the far/back wall (-Z), the bottom
+ * edge (v=1) is nearest the aisle (+Z) - which matches the +Z-is-the-aisle
+ * convention `SCENE_MUTATION_SCHEMA` already documents for studio commands.
+ */
+export function footprintPointFromImageFraction(
+  u: number,
+  v: number,
+  widthM: number,
+  heightM: number,
+): FootprintPoint {
+  const clamp01 = (n: number) => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.5);
+  return {
+    x: (clamp01(u) - 0.5) * widthM,
+    z: (clamp01(v) - 0.5) * heightM,
+  };
+}
+
+/**
  * One closed wall run per boundary edge - the default a trace populates as
  * soon as the boundary is finished, before any edge is opened up as an
  * aisle in the inspector (mirroring how the fixed-rectangle model starts

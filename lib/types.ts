@@ -612,6 +612,43 @@ export interface SceneDirection {
   suggestedProps: PropKind[];
 }
 
+/**
+ * One suggested placement from `generateSceneFromFloorPlan` (issue #58,
+ * "one-click floor-plan-to-scene generation") - either an existing project
+ * asset (matched by name) or a generic staging prop, positioned within the
+ * proposal's `boundary`. `x`/`z` are already resolved to booth-local metres
+ * (see `lib/scene/floorplan-scene.ts`), not the raw image-fraction
+ * coordinates the model itself reasons in.
+ */
+export interface FloorPlanPlacementSuggestion {
+  /** Exact name of a project asset this placement stages - null when no listed asset plausibly matches. */
+  assetName: string | null;
+  /** A known simple staging prop, used only when `assetName` is null. */
+  propKind: PropKind | null;
+  /** Display label for the placed node. Null to use the matched asset's, or the prop's own, name. */
+  name: string | null;
+  x: number;
+  z: number;
+  /** Rotation about Y, degrees - 0 faces +Z (the aisle), same convention as SCENE_MUTATION_SCHEMA. */
+  rotationDegrees: number;
+}
+
+/**
+ * A suggested booth boundary plus furniture layout, read from an uploaded
+ * floor-plan image (issue #58) - the "one-click" counterpart to issue #52's
+ * manual trace. `boundary` is the same `FootprintPoint[]` shape a manual
+ * trace produces, and `widthM`/`heightM` are the reference image's resolved
+ * real-world size, ready to drop straight into a `FloorPlanUnderlay`. See
+ * `lib/scene/floorplan-scene.ts`'s `buildSceneFromFloorPlanProposal`, which is
+ * what actually turns one of these into a `SceneDoc`.
+ */
+export interface FloorPlanSceneProposal {
+  boundary: FootprintPoint[];
+  widthM: number;
+  heightM: number;
+  placements: FloorPlanPlacementSuggestion[];
+}
+
 /* -------------------------------------------------------------------------- */
 /* Pipeline jobs                                                              */
 /* -------------------------------------------------------------------------- */
@@ -624,7 +661,8 @@ export type JobKind =
   | 'direct_scene'
   | 'concept_render'
   | 'render'
-  | 'rebake_part';
+  | 'rebake_part'
+  | 'floorplan_scene';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 

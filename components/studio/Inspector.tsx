@@ -9,6 +9,7 @@ import { overlappingNodeNames } from '@/lib/scene/collisions';
 import { MIN_FOOTPRINT_POINTS, isValidFootprintBoundary } from '@/lib/scene/footprint';
 import { orphanedOverrideKeys } from '@/lib/scene/materialOverrides';
 import { BOOTH_PRESETS, PROP_DEFINITIONS, getPreset } from '@/lib/scene/presets';
+import { readImageDimensions } from '@/lib/studio/imageDimensions';
 import { useStudio, type LoadedVersion } from '@/lib/studio/store';
 import type { AssetVersion, BoothFootprint, SceneNode } from '@/lib/types';
 
@@ -643,23 +644,6 @@ function EnvironmentInspector() {
       </Panel>
     </div>
   );
-}
-
-/** Natural-size dimensions of an image file, read without ever uploading it. */
-function readImageDimensions(file: File): Promise<{ width: number; height: number }> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve({ width: img.naturalWidth, height: img.naturalHeight });
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error('Could not read image dimensions'));
-    };
-    img.src = url;
-  });
 }
 
 /**
