@@ -315,7 +315,8 @@ export type JobKind =
   | 'reconstruct'
   | 'refine'
   | 'direct_scene'
-  | 'concept_render';
+  | 'concept_render'
+  | 'render';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 
@@ -408,7 +409,9 @@ export type SceneRenderKind =
   /** Progressively path-traced in the browser. Geometrically faithful. */
   | 'pathtraced'
   /** Image-model pass over a viewport capture. Fast, NOT spec-accurate. */
-  | 'concept';
+  | 'concept'
+  /** Offline Blender/Cycles render. Geometrically faithful, print resolution. */
+  | 'render';
 
 export interface SceneRender {
   id: Uuid;
@@ -418,9 +421,26 @@ export interface SceneRender {
   path: string;
   width: number;
   height: number;
-  /** Samples accumulated, for path-traced renders. */
+  /** Samples accumulated, for path-traced renders and offline Cycles renders. */
   samples: number | null;
   /** The instruction given to the image model, for concept renders. */
   prompt: string | null;
   createdAt: IsoDate;
+}
+
+/** Extra render passes an offline render job may produce alongside the beauty pass. */
+export type RenderPass = 'ao' | 'cryptomatte';
+
+/** What the studio can ask the offline render worker for. */
+export interface OfflineRenderRequest {
+  sceneId: Uuid;
+  width: number;
+  height: number;
+  /** Cycles samples. Higher is cleaner and slower. */
+  samples?: number;
+  /** On by default - the whole point of an offline pass is a clean image. */
+  denoise?: boolean;
+  /** Advanced option: extra passes written alongside the beauty image. */
+  passes?: RenderPass[];
+  format?: 'png' | 'exr';
 }
