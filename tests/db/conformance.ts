@@ -54,6 +54,7 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       provider: 'stub',
       providerJobId: null,
       refinement: null,
+      qaResult: null,
       acceptedAt: null,
     });
 
@@ -90,6 +91,7 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       provider: 'stub',
       providerJobId: null,
       refinement: null,
+      qaResult: null,
       acceptedAt: null,
     });
 
@@ -130,6 +132,7 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       provider: 'stub',
       providerJobId: null,
       refinement: null,
+      qaResult: null,
       acceptedAt: null,
     });
 
@@ -150,6 +153,8 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       selectionKind: 'point',
       anchorDescription: 'centre, 0 mm above the floor',
       body: 'A note.',
+      parentAnnotationId: null,
+      mentions: [],
     });
     expect(annotation.status).toBe('open');
 
@@ -165,6 +170,90 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
 
     const appliedOnly = await store.listAnnotations([asset.id], ['open']);
     expect(appliedOnly.map((a) => a.id)).not.toContain(annotation.id);
+  });
+
+  it('threads a reply under its parent annotation and captures @mentions', async () => {
+    const store = await getStore();
+    const project = await store.createProject({ ownerId: 'owner-annotations', name: 'Booth 11' });
+    const asset = await store.createAsset({
+      projectId: project.id,
+      name: 'Armchair',
+      status: 'draft',
+      currentVersionId: null,
+      sourceImageIds: [],
+    });
+    const version = await store.createAssetVersion({
+      assetId: asset.id,
+      versionNumber: 1,
+      label: 'v1',
+      parentVersionId: null,
+      spec: makeFurnitureSpec(),
+      views: [],
+      meshPath: null,
+      previewPath: null,
+      meshExtentMm: null,
+      provider: 'stub',
+      providerJobId: null,
+      refinement: null,
+      qaResult: null,
+      acceptedAt: null,
+    });
+
+    const parent = await store.createAnnotation({
+      assetId: asset.id,
+      assetVersionId: version.id,
+      sceneId: null,
+      point: { x: 0, y: 0, z: 0 },
+      normal: { x: 0, y: 1, z: 0 },
+      partName: null,
+      componentName: null,
+      componentRole: null,
+      originVersionId: version.id,
+      originVersionNumber: version.versionNumber,
+      staleNote: null,
+      source: 'internal',
+      clientName: null,
+      selectionKind: 'point',
+      anchorDescription: 'centre, 0 mm above the floor',
+      body: 'Slim this down, @jane',
+      parentAnnotationId: null,
+      mentions: ['jane'],
+    });
+    expect(parent.mentions).toEqual(['jane']);
+    expect(parent.parentAnnotationId).toBeNull();
+
+    const reply = await store.createAnnotation({
+      assetId: asset.id,
+      assetVersionId: parent.assetVersionId,
+      sceneId: parent.sceneId,
+      point: parent.point,
+      normal: parent.normal,
+      partName: parent.partName,
+      componentName: parent.componentName,
+      componentRole: parent.componentRole,
+      originVersionId: parent.originVersionId,
+      originVersionNumber: parent.originVersionNumber,
+      staleNote: null,
+      source: 'internal',
+      clientName: null,
+      selectionKind: parent.selectionKind,
+      anchorDescription: parent.anchorDescription,
+      body: 'On it, thanks @bob',
+      parentAnnotationId: parent.id,
+      mentions: ['bob'],
+    });
+    expect(reply.parentAnnotationId).toBe(parent.id);
+    expect(reply.mentions).toEqual(['bob']);
+
+    const both = await store.listAnnotations([asset.id]);
+    expect(both.map((a) => a.id)).toEqual(expect.arrayContaining([parent.id, reply.id]));
+
+    // Deleting a note takes its replies with it (cascade in Postgres,
+    // mirrored in LocalStore).
+    await store.deleteAnnotation(parent.id);
+    const remaining = await store.listAnnotations([asset.id]);
+    expect(remaining.map((a) => a.id)).not.toContain(parent.id);
+    expect(remaining.map((a) => a.id)).not.toContain(reply.id);
   });
 
   it('claims each queued job at most once and reclaims lapsed leases', async () => {

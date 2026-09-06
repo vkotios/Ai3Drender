@@ -166,8 +166,14 @@ function SceneContents({
                 annotations={
                   presenting
                     ? []
-                    : annotations.filter(
-                        (a) => a.assetId === loaded.version.assetId && a.status !== 'dismissed',
+                    : // A reply is threaded under its parent in the panel, not its own
+                      // pin - it shares the parent's anchor, so it would otherwise render
+                      // as a duplicate marker at the same spot. See Annotation.parentAnnotationId.
+                      annotations.filter(
+                        (a) =>
+                          a.assetId === loaded.version.assetId &&
+                          a.status !== 'dismissed' &&
+                          !a.parentAnnotationId,
                       )
                 }
                 pendingPin={presenting ? null : pendingPin}

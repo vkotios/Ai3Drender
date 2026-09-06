@@ -2,14 +2,17 @@ import {
   analyzeFurniture,
   conceptRender,
   directScene,
+  evaluateReconstruction,
   refineSpec,
   synthesizeViews,
   type ImageInput,
 } from '@/lib/ai/gemini';
 import { getMeshProvider } from '@/lib/ai/mesh';
 import { createPreviewMesh } from '@/lib/ai/mesh/simplify';
+import { offlineQaResult } from '@/lib/ai/offline';
+import { renderMeshViews } from '@/lib/ai/qa/render';
 import type { Store } from '@/lib/db';
-import { env } from '@/lib/env';
+import { env, hasGemini } from '@/lib/env';
 import { anchorWithinBounds, describeAnchor, formatAnnotationForPrompt, resolveComponent } from '@/lib/scene/anchor';
 
 import type { StageContext } from './context';
@@ -21,6 +24,7 @@ import type {
   AssetVersion,
   FurnitureAsset,
   Job,
+  QaResult,
   RefinementRequest,
   SourceImage,
   SynthesizedView,
@@ -114,6 +118,7 @@ async function runAnalyze(ctx: StageContext): Promise<Record<string, unknown>> {
     provider: getMeshProvider().name,
     providerJobId: null,
     refinement: null,
+    qaResult: null,
     acceptedAt: null,
   });
 
@@ -233,6 +238,9 @@ async function runReconstruct(ctx: StageContext): Promise<Record<string, unknown
     provider: provider.name,
     providerJobId: result.providerJobId,
   });
+
+  const qaResult = await runPerceptualQa(ctx, store, asset, version, result.glb);
+
   await store.updateAsset(asset.id, { status: 'ready', currentVersionId: version.id });
 
   return {
@@ -240,7 +248,52 @@ async function runReconstruct(ctx: StageContext): Promise<Record<string, unknown
     previewMeshPath,
     provider: provider.name,
     bytes: result.glb.byteLength,
+    qaScore: qaResult?.score ?? null,
   };
+}
+
+/**
+ * Perceptual QA: render a couple of stock views of the new mesh and ask
+ * Gemini vision whether it actually looks like the source photographs -
+ * gltf-transform's round-trip only ever checked that the glTF was structurally
+ * valid, never that it resembled anything.
+ *
+ * Entirely best-effort. A render bug, a flaky Gemini call, or no GEMINI_API_KEY
+ * at all must never fail reconstruction: the caller always gets a mesh back,
+ * this only ever adds a soft warning on top of one. Any failure here is
+ * swallowed (and logged) rather than propagated, and the version's qaResult
+ * simply stays whatever it already was (null on a first build).
+ */
+async function runPerceptualQa(
+  ctx: StageContext,
+  store: Store,
+  asset: FurnitureAsset,
+  version: AssetVersion,
+  glb: Uint8Array,
+): Promise<QaResult | null> {
+  try {
+    await ctx.report(0.96, 'Checking the mesh against the source photographs');
+
+    // Rendering mesh views and calling Gemini are both real work; skip both
+    // entirely rather than pay for a render nothing will use when there is no
+    // key to send it to (evaluateReconstruction would return the same offline
+    // placeholder either way, but without wastefully rendering first).
+    if (!hasGemini) {
+      const qaResult = offlineQaResult();
+      await store.updateAssetVersion(version.id, { qaResult });
+      return qaResult;
+    }
+
+    const meshViews = await renderMeshViews(glb);
+    const sourceImages = await store.getSourceImages(asset.sourceImageIds);
+    const photos = await loadImages(store, sourceImages);
+    const qaResult = await evaluateReconstruction(photos, meshViews, version.spec);
+    await store.updateAssetVersion(version.id, { qaResult });
+    return qaResult;
+  } catch (cause) {
+    console.error(`[pipeline] reconstruct: perceptual QA failed for version ${version.id}`, cause);
+    return null;
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -320,6 +373,10 @@ async function runRefine(ctx: StageContext): Promise<Record<string, unknown>> {
     provider: parent.provider,
     providerJobId: null,
     refinement: request,
+    // A rebuilt mesh gets its own fresh QA pass once reconstruct runs; an
+    // unchanged one is still depicted faithfully by whatever the parent's
+    // check already found.
+    qaResult: request.rebuildMesh ? null : parent.qaResult,
     acceptedAt: null,
   });
 
@@ -381,7 +438,11 @@ async function carryForwardOpenAnnotations(
   excludeIds: Set<string>,
 ): Promise<Annotation[]> {
   const stillOpen = (await store.listAnnotations([asset.id], ['open'])).filter(
-    (a) => a.assetVersionId === parent.id && !excludeIds.has(a.id),
+    // A reply piggybacks on its parent's anchor rather than carrying an
+    // independent one of its own (see Annotation.parentAnnotationId), so it
+    // has no anchor to re-resolve here - only the top-level note it replies
+    // to gets carried forward.
+    (a) => a.assetVersionId === parent.id && !excludeIds.has(a.id) && !a.parentAnnotationId,
   );
 
   const carried: Annotation[] = [];

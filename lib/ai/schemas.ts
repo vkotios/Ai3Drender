@@ -112,6 +112,47 @@ export const FURNITURE_SPEC_SCHEMA = {
   ],
 } as const;
 
+export const QA_RESULT_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    score: {
+      type: 'NUMBER',
+      description:
+        '0 to 100 fidelity score: how closely the rendered mesh views match the source ' +
+        'photographs in silhouette, proportions, materials and colour. 100 = indistinguishable ' +
+        'from the photos; 0 = no resemblance at all.',
+    },
+    issues: {
+      type: 'ARRAY',
+      items: { type: 'STRING' },
+      description:
+        'Specific mismatches between the mesh and the photos, e.g. "missing armrest", ' +
+        '"legs are too thick", "seat cushion is the wrong colour". Empty array when the mesh ' +
+        'is a faithful match.',
+    },
+  },
+  required: ['score', 'issues'],
+} as const;
+
+/**
+ * Just the PBR fields, for a targeted single-material correction
+ * (`correctMaterial` in lib/ai/gemini.ts). Deliberately narrower than
+ * `material` above: id/kind/name/notes are not the model's to change here,
+ * so asking it to echo them back only invites drift.
+ */
+export const MATERIAL_CORRECTION_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    baseColorHex: hex,
+    roughness: { type: 'NUMBER', description: '0 mirror-smooth to 1 fully diffuse.' },
+    metalness: { type: 'NUMBER', description: '1 only for bare metal, else 0.' },
+    sheen: { type: 'NUMBER', description: 'Fabric rim response, 0 for hard materials.' },
+    clearcoat: { type: 'NUMBER', description: 'Lacquer layer, e.g. 0.8 for polished wood.' },
+    finish: { type: 'STRING', description: 'e.g. "brushed", "oiled walnut", "powder-coated".' },
+  },
+  required: ['baseColorHex', 'roughness', 'metalness', 'sheen', 'clearcoat', 'finish'],
+} as const;
+
 export const SCENE_DIRECTION_SCHEMA = {
   type: 'OBJECT',
   properties: {

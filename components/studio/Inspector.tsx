@@ -1,12 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import { Badge, Field, Panel, Slider, TextInput } from '@/components/ui';
+import { ConfidenceBadge } from '@/components/ConfidenceBadge';
+import { Badge, Button, Field, Panel, Slider, TextInput } from '@/components/ui';
+import { createAssetNode, createSceneDoc } from '@/lib/scene/defaults';
+import { overlappingNodeNames } from '@/lib/scene/collisions';
 import { orphanedOverrideKeys } from '@/lib/scene/materialOverrides';
 import { BOOTH_PRESETS, PROP_DEFINITIONS, getPreset } from '@/lib/scene/presets';
-import { useStudio } from '@/lib/studio/store';
+import { useStudio, type LoadedVersion } from '@/lib/studio/store';
 import type { AssetVersion, SceneNode } from '@/lib/types';
+
+import { SplitCompareOverlay } from './CompareViewport';
 
 const DEG = 180 / Math.PI;
 
@@ -21,10 +26,20 @@ export function Inspector() {
 }
 
 function NodeInspector({ node }: { node: SceneNode }) {
+  const doc = useStudio((s) => s.doc);
   const patchNode = useStudio((s) => s.patchNode);
   const removeNode = useStudio((s) => s.removeNode);
   const versions = useStudio((s) => s.versions);
   const loaded = node.assetVersionId ? versions[node.assetVersionId] : null;
+
+  // Recomputed off the doc (and whatever asset versions have loaded) on every
+  // render, so any move, resize or add anywhere in the scene refreshes it -
+  // an axis-aligned bounding-box check, deliberately not full mesh collision.
+  // See lib/scene/collisions.ts.
+  const overlapNames = useMemo(
+    () => (doc ? overlappingNodeNames(node, doc, versions) : []),
+    [doc, node, versions],
+  );
 
   const setPosition = (axis: 'x' | 'y' | 'z', value: number) =>
     patchNode(node.id, {
@@ -36,12 +51,15 @@ function NodeInspector({ node }: { node: SceneNode }) {
       <Panel
         title="Selection"
         actions={
-          <button
-            onClick={() => removeNode(node.id)}
-            className="text-[11px] text-red-400 hover:text-red-300"
-          >
-            Remove
-          </button>
+          <div className="flex items-center gap-2">
+            {node.kind === 'asset' && loaded && <ConfidenceBadge spec={loaded.version.spec} />}
+            <button
+              onClick={() => removeNode(node.id)}
+              className="text-[11px] text-red-400 hover:text-red-300"
+            >
+              Remove
+            </button>
+          </div>
         }
       >
         <Field label="Name">
@@ -60,6 +78,13 @@ function NodeInspector({ node }: { node: SceneNode }) {
           />
           Visible
         </label>
+
+        {overlapNames.length > 0 && (
+          <div className="mt-3 rounded-md border border-amber-700/60 bg-amber-950/30 p-2.5 text-[11px] text-amber-300">
+            This piece overlaps with {joinNames(overlapNames)}. Overlap is a bounding-box
+            estimate and does not block saving - move the pieces apart if this is not intended.
+          </div>
+        )}
       </Panel>
 
       <Panel title="Placement">
@@ -108,6 +133,21 @@ function NodeInspector({ node }: { node: SceneNode }) {
       </Panel>
 
       {loaded && <MaterialInspector node={node} />}
+
+      {loaded?.version.acceptedAt && (
+        <Panel title="Parts list">
+          <p className="text-[11px] leading-relaxed text-shell-400">
+            Every component in this accepted version, its bound material-library code and how many
+            instances it expands to.
+          </p>
+          <a
+            href={`/api/assets/${loaded.version.assetId}/versions/${loaded.version.id}/bom`}
+            className="mt-2.5 inline-flex items-center justify-center gap-1.5 rounded-md border border-shell-700 bg-shell-800 px-2.5 py-1 text-xs font-medium text-shell-100 transition hover:border-shell-600 hover:bg-shell-700"
+          >
+            Export BOM
+          </a>
+        </Panel>
+      )}
 
       {node.kind === 'asset' && node.assetVersionId && (
         <VersionComparePanel assetId={loaded?.version.assetId} nodeId={node.id} currentVersionId={node.assetVersionId} />
@@ -279,6 +319,7 @@ function VersionComparePanel({
   const [error, setError] = useState<string | null>(null);
   const [aId, setAId] = useState<string | null>(null);
   const [bId, setBId] = useState<string | null>(null);
+  const [splitOpen, setSplitOpen] = useState(false);
 
   useEffect(() => {
     if (!assetId) return;
@@ -318,6 +359,8 @@ function VersionComparePanel({
   if (!assetId) return null;
 
   const showing = currentVersionId === bId ? 'B' : currentVersionId === aId ? 'A' : null;
+  const optionA = options?.find((o) => o.version.id === aId) ?? null;
+  const optionB = options?.find((o) => o.version.id === bId) ?? null;
 
   return (
     <Panel title="Compare versions">
@@ -355,10 +398,44 @@ function VersionComparePanel({
             Same spot, same camera - only the mesh and materials swap. Save to keep whichever one
             you land on, or reload the stand to discard the swap.
           </p>
+
+          <Button
+            size="sm"
+            className="w-full"
+            disabled={aId === bId}
+            onClick={() => setSplitOpen(true)}
+          >
+            Compare side by side ▸
+          </Button>
         </div>
+      )}
+
+      {splitOpen && optionA && optionB && (
+        <SplitCompareOverlay
+          title="Comparing mesh versions"
+          onClose={() => setSplitOpen(false)}
+          left={{
+            label: `Version ${optionA.version.versionNumber}`,
+            sublabel: optionA.version.acceptedAt ? 'accepted' : undefined,
+            doc: buildIsolatedDoc(optionA),
+            versions: { [optionA.version.id]: optionA },
+          }}
+          right={{
+            label: `Version ${optionB.version.versionNumber}`,
+            sublabel: optionB.version.acceptedAt ? 'accepted' : undefined,
+            doc: buildIsolatedDoc(optionB),
+            versions: { [optionB.version.id]: optionB },
+          }}
+        />
       )}
     </Panel>
   );
+}
+
+/** A standalone one-piece stand, so a version can be viewed apart from any scene. */
+function buildIsolatedDoc(option: LoadedVersion) {
+  const doc = createSceneDoc();
+  return { ...doc, nodes: [createAssetNode(option.version, option.version.spec.displayName)] };
 }
 
 function VersionPicker({
@@ -555,6 +632,12 @@ function EnvironmentInspector() {
       </Panel>
     </div>
   );
+}
+
+/** "A", "A and B", or "A, B and C" - never a bare comma-joined list. */
+function joinNames(names: string[]): string {
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 function ColorRow({

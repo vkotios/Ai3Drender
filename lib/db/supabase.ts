@@ -102,6 +102,7 @@ const toVersion = (r: Row): AssetVersion => ({
   provider: r.provider,
   providerJobId: r.provider_job_id,
   refinement: r.refinement,
+  qaResult: r.qa_result ?? null,
   acceptedAt: r.accepted_at,
   createdAt: r.created_at,
 });
@@ -153,6 +154,10 @@ const toAnnotation = (r: Row): Annotation => ({
   clientName: r.client_name,
   resolvedByVersionId: r.resolved_by_version_id,
   staleNote: r.stale_note,
+  // Rows written before these columns existed round-trip as an ordinary,
+  // unmentioned top-level note.
+  parentAnnotationId: r.parent_annotation_id ?? null,
+  mentions: r.mentions ?? [],
   createdAt: r.created_at,
 });
 
@@ -165,6 +170,7 @@ const toShareLink = (r: Row): SceneShareLink => ({
   expiresAt: r.expires_at,
   revokedAt: r.revoked_at,
   lastAccessedAt: r.last_accessed_at,
+  lastReminderSentAt: r.last_reminder_sent_at,
   createdAt: r.created_at,
 });
 
@@ -428,6 +434,7 @@ export class SupabaseStore implements Store {
         provider: input.provider,
         provider_job_id: input.providerJobId,
         refinement: input.refinement,
+        qa_result: input.qaResult,
         accepted_at: input.acceptedAt,
       })
       .select()
@@ -462,6 +469,7 @@ export class SupabaseStore implements Store {
     if (patch.provider !== undefined) update.provider = patch.provider;
     if (patch.providerJobId !== undefined) update.provider_job_id = patch.providerJobId;
     if (patch.refinement !== undefined) update.refinement = patch.refinement;
+    if (patch.qaResult !== undefined) update.qa_result = patch.qaResult;
     if (patch.acceptedAt !== undefined) update.accepted_at = patch.acceptedAt;
     const res = await this.db.from('asset_versions').update(update).eq('id', id).select().single();
     return toVersion(unwrap('updateAssetVersion', res));
@@ -657,6 +665,27 @@ export class SupabaseStore implements Store {
     if (error) throw new Error(`touchShareLink: ${error.message}`);
   }
 
+  async listActiveShareLinks(): Promise<SceneShareLink[]> {
+    // Called from the reminder sweep with the service-role client, so this
+    // deliberately reaches across every project rather than one owner's -
+    // there is no signed-in owner to scope it by, same as `getWorkerStore`'s
+    // other callers.
+    const res = await this.db
+      .from('scene_share_links')
+      .select('*')
+      .is('revoked_at', null)
+      .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`);
+    return unwrap('listActiveShareLinks', res).map(toShareLink);
+  }
+
+  async markShareLinkReminded(id: Uuid): Promise<void> {
+    const { error } = await this.db
+      .from('scene_share_links')
+      .update({ last_reminder_sent_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) throw new Error(`markShareLinkReminded: ${error.message}`);
+  }
+
   /* Jobs ------------------------------------------------------------------- */
 
   async createJob(input: NewJob): Promise<Job> {
@@ -820,6 +849,8 @@ export class SupabaseStore implements Store {
         source: input.source,
         client_name: input.clientName,
         stale_note: input.staleNote,
+        parent_annotation_id: input.parentAnnotationId,
+        mentions: input.mentions,
       })
       .select()
       .single();
@@ -854,6 +885,7 @@ export class SupabaseStore implements Store {
     if (patch.componentRole !== undefined) update.component_role = patch.componentRole;
     if (patch.anchorDescription !== undefined) update.anchor_description = patch.anchorDescription;
     if (patch.staleNote !== undefined) update.stale_note = patch.staleNote;
+    if (patch.mentions !== undefined) update.mentions = patch.mentions;
     const res = await this.db.from('annotations').update(update).eq('id', id).select().single();
     return toAnnotation(unwrap('updateAnnotation', res));
   }

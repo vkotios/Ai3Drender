@@ -81,6 +81,23 @@ function placeComponent(
   }
 }
 
+/**
+ * How many physical instances one component's role expands to when massed -
+ * e.g. a "leg" component becomes four boxes, an "armrest" two. This is what a
+ * parts-list export needs for a quantity column, and it is what makes the
+ * mesh part names ("Legs 1".."Legs 4") that the whole-part annotation
+ * selection groups by base name (see `baseName` in lib/scene/anchor.ts) come
+ * in multiples in the first place.
+ *
+ * Reuses `placeComponent` itself, with a throwaway zeroed layout, rather than
+ * keeping a second table of counts in sync by hand - the position count it
+ * returns for a role can never drift from what actually gets placed.
+ */
+export function instanceCountForRole(role: string): number {
+  const zeroLayout: Layout = { width: 0, depth: 0, height: 0, seatHeight: 0 };
+  return placeComponent(role, [0, 0, 0], zeroLayout, { y: 0 }).length;
+}
+
 export function buildMassing(spec: FurnitureSpec): { boxes: GlbBox[]; materials: GlbMaterial[] } {
   const width = Math.max(spec.dimensions.widthMm * MM, 0.05);
   const depth = Math.max(spec.dimensions.depthMm * MM, 0.05);

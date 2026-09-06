@@ -1,23 +1,10 @@
-import { timingSafeEqual } from 'node:crypto';
-
 import { drainJobs } from '@/lib/pipeline';
 import { getWorkerStore } from '@/lib/db';
-import { env } from '@/lib/env';
-import { json, withSession } from '@/lib/api';
+import { isAuthorizedCron, json, withSession } from '@/lib/api';
 
 // Reconstruction polls a vendor for minutes at a time.
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
-
-/** Constant-time header comparison so a wrong guess can't be timed out. */
-function isAuthorizedCron(request: Request): boolean {
-  if (!env.cronSecret) return false;
-  const header = request.headers.get('authorization') ?? '';
-  const expected = `Bearer ${env.cronSecret}`;
-  const a = Buffer.from(header);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
 
 /**
  * Drain the job queue.

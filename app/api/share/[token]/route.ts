@@ -15,7 +15,7 @@ export async function GET(_request: Request, { params }: Params) {
   const { token } = await params;
   const resolution = await resolveShareToken(token);
   if (!resolution.ok) return apiError(resolution.message, resolution.status);
-  const { store, scene } = resolution.context;
+  const { store, scene, role } = resolution.context;
 
   const versionIds = [...referencedAssetVersionIds(scene)];
   const versions = [];
@@ -42,5 +42,6 @@ export async function GET(_request: Request, { params }: Params) {
     scene,
     versions,
     annotations: await store.listAnnotations(assetIds),
+    role,
   });
 }

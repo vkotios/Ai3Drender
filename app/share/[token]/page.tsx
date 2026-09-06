@@ -31,7 +31,7 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
     );
   }
 
-  const { store, scene } = resolution.context;
+  const { store, scene, role } = resolution.context;
 
   const versionIds = [...referencedAssetVersionIds(scene)];
   const versions: LoadedVersion[] = [];
@@ -55,5 +55,13 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
   const assetIds = [...new Set(versions.map((v) => v.version.assetId))];
   const annotations = await store.listAnnotations(assetIds);
 
-  return <ShareStudioShell token={token} scene={scene} versions={versions} annotations={annotations} />;
+  return (
+    <ShareStudioShell
+      token={token}
+      scene={scene}
+      versions={versions}
+      annotations={annotations}
+      role={role}
+    />
+  );
 }
