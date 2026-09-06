@@ -1,10 +1,19 @@
 import { GoogleGenAI } from '@google/genai';
 
 import { env, hasGemini } from '@/lib/env';
-import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, QaResult, SceneDirection } from '@/lib/types';
+import type { VersionLookup } from '@/lib/scene/collisions';
+import {
+  normalizeRawMutation,
+  summarizeSceneForCommand,
+  type RawSceneMutation,
+  type SceneCommandResult,
+  type SceneMutation,
+} from '@/lib/scene/command';
+import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, QaResult, SceneDirection, SceneDoc } from '@/lib/types';
 
 import {
   offlineFurnitureSpec,
+  offlineInterpretSceneCommand,
   offlineMaterialCorrection,
   offlineQaResult,
   offlineResolvePartReference,
@@ -15,6 +24,7 @@ import {
   MATERIAL_CORRECTION_SCHEMA,
   PART_REFERENCE_SCHEMA,
   QA_RESULT_SCHEMA,
+  SCENE_COMMAND_SCHEMA,
   SCENE_DIRECTION_SCHEMA,
 } from './schemas';
 
@@ -652,6 +662,94 @@ User's description: "${query}"
 
   const parsed = parseJson<{ partName: string | null }>(response.text ?? '', 'resolvePartReference');
   return parts.find((p) => p.name === parsed.partName)?.name ?? null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 6c. Natural-language studio command -> a closed set of scene mutations     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Turn a free-text studio command ("move the sofa 30cm left and warm up the
+ * lighting") into an ordered list of concrete mutations drawn from a CLOSED,
+ * explicit set - see `SCENE_MUTATION_KINDS` in lib/scene/command.ts. This is
+ * issue #60, deliberately scoped to a single structured call for the app's
+ * own operator, never an open-ended agentic tool-use loop or an external MCP
+ * integration - same "free text in, small structured object out" shape as
+ * `correctMaterial`/`resolvePartReference` above.
+ *
+ * This function only interprets - it never touches the document. The route
+ * (`POST /api/scenes/:sceneId/command`) is what calls `applySceneMutations`
+ * with the result and saves it back through the ordinary scene-save path.
+ */
+export async function interpretSceneCommand(
+  doc: SceneDoc,
+  versions: VersionLookup,
+  command: string,
+): Promise<SceneCommandResult> {
+  if (!hasGemini) return offlineInterpretSceneCommand(doc, versions, command);
+
+  const response = await ai().models.generateContent({
+    model: env.geminiTextModel,
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `
+You are translating one operator's plain-language staging instruction into a small, ordered
+list of concrete edits to a furniture exhibition stand, using ONLY a closed set of supported
+edit kinds. Never invent a kind of edit that is not listed below, and never invent a node,
+material or prop kind that is not listed for this stand.
+
+Supported mutation kinds:
+- move_node: nudge a staged piece by a position delta.
+- rotate_node: turn a staged piece by a rotation delta.
+- scale_node: resize a staged piece by a multiplier.
+- set_material_override: change one material's colour/roughness/metalness/finish on a piece,
+  without touching the underlying product specification.
+- set_light_property: change a light's colour, intensity or falloff distance.
+- set_visibility: show or hide a piece.
+- add_prop: add one new simple staging prop (plinth, rug, partition, planter, side table or
+  floor lamp).
+
+Coordinate convention: +X is to the right and -X is to the left, as seen from the aisle camera
+facing the booth. +Z is toward the aisle/camera (the front, nearer the viewer) and -Z is toward
+the back wall (farther from the viewer). +Y is up. Convert any distance given in cm or mm to
+metres, and any rotation given in a unit other than degrees to degrees.
+
+Staged nodes on this stand:
+${summarizeSceneForCommand(doc, versions)}
+
+Operator's command: "${command}"
+
+Every distinct part of the command that doesn't map onto exactly one of the supported kinds
+above, or that names a piece/material not listed above, goes into "unresolved" in the
+operator's own words instead of being guessed at.
+`.trim(),
+          },
+        ],
+      },
+    ],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: SCENE_COMMAND_SCHEMA as never,
+      temperature: 0.2,
+    },
+  });
+
+  const parsed = parseJson<{ mutations: RawSceneMutation[]; unresolved: string[] }>(
+    response.text ?? '',
+    'interpretSceneCommand',
+  );
+
+  const mutations: SceneMutation[] = [];
+  const unresolved = Array.isArray(parsed.unresolved) ? parsed.unresolved.filter(Boolean) : [];
+  for (const raw of Array.isArray(parsed.mutations) ? parsed.mutations : []) {
+    const result = normalizeRawMutation(raw, doc);
+    if ('problem' in result) unresolved.push(result.problem);
+    else mutations.push(result);
+  }
+  return { mutations, unresolved };
 }
 
 /* -------------------------------------------------------------------------- */

@@ -17,6 +17,7 @@ import { useStudio, type LoadedVersion, type StudioMode } from '@/lib/studio/sto
 import type { Annotation, ClientApproval, Project, Scene } from '@/lib/types';
 
 import { AnnotationPanel } from './AnnotationPanel';
+import { CommandBar } from './CommandBar';
 import { Inspector } from './Inspector';
 import { RenderPanel, type StoredRender } from './RenderPanel';
 import { Outliner } from './Outliner';
@@ -400,6 +401,8 @@ export function StudioShell({
           </Button>
         </div>
       </header>
+
+      <CommandBar sceneId={scene.id} />
 
       <div className="flex min-h-0 flex-1">
         <aside className="w-72 shrink-0 overflow-y-auto border-r border-shell-800 bg-shell-950 p-3">

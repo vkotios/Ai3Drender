@@ -168,6 +168,155 @@ export const PART_REFERENCE_SCHEMA = {
   required: ['partName'],
 } as const;
 
+/**
+ * One edit produced by `interpretSceneCommand` (lib/ai/gemini.ts, issue #60).
+ *
+ * A flat object carrying every field any supported mutation kind might use,
+ * almost all nullable - Gemini's structured-output schema (an OpenAPI 3.0
+ * subset) has no good way to express "this field only applies when `kind` is
+ * X" as a discriminated union, so the wire shape stays flat and
+ * `normalizeRawMutation` (lib/scene/command.ts) is what actually enforces
+ * which fields matter for which kind. Keep this list of kinds CLOSED - see
+ * `SCENE_MUTATION_KINDS` in that same module, the single source of truth this
+ * mirrors.
+ */
+export const SCENE_MUTATION_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    kind: {
+      type: 'STRING',
+      format: 'enum',
+      enum: [
+        'move_node',
+        'rotate_node',
+        'scale_node',
+        'set_material_override',
+        'set_light_property',
+        'set_visibility',
+        'add_prop',
+      ],
+    },
+    nodeName: {
+      type: 'STRING',
+      nullable: true,
+      description:
+        'The exact name of the staged node this mutation targets, copied verbatim from the ' +
+        '"Staged nodes" list. Null for add_prop (which creates a new node instead of targeting ' +
+        'one), or when no listed node plausibly matches - never invent a name.',
+    },
+    deltaMeters: {
+      type: 'OBJECT',
+      nullable: true,
+      properties: { x: { type: 'NUMBER' }, y: { type: 'NUMBER' }, z: { type: 'NUMBER' } },
+      description:
+        "move_node only: metres to ADD to the node's current position (a delta, not an " +
+        'absolute position). +X is right, -X is left, +Z is toward the aisle/camera (front), ' +
+        '-Z is toward the back wall, +Y is up. Convert cm/mm in the instruction to metres.',
+    },
+    deltaDegrees: {
+      type: 'OBJECT',
+      nullable: true,
+      properties: { x: { type: 'NUMBER' }, y: { type: 'NUMBER' }, z: { type: 'NUMBER' } },
+      description:
+        "rotate_node only: degrees to ADD to the node's current rotation about each axis (a " +
+        'delta, not an absolute angle). Turning left/right as seen from above is the Y axis.',
+    },
+    scaleFactor: {
+      type: 'NUMBER',
+      nullable: true,
+      description:
+        "scale_node only: multiplier applied to the node's CURRENT scale on every axis - e.g. " +
+        '1.2 for "20% bigger", 0.5 for "half the size". Not an absolute scale value.',
+    },
+    materialName: {
+      type: 'STRING',
+      nullable: true,
+      description:
+        "set_material_override only: exact material name copied from the target node's " +
+        'materials list. Null when the node has only one material, or a prop (which always has ' +
+        'a single material slot), or the instruction did not name one.',
+    },
+    baseColorHex: {
+      type: 'STRING',
+      nullable: true,
+      description: 'set_material_override only: the new base colour, CSS hex e.g. #8B5A2B. Null when colour is unchanged.',
+    },
+    roughness: {
+      type: 'NUMBER',
+      nullable: true,
+      description: 'set_material_override only: 0 (mirror-smooth) to 1 (fully diffuse). Null when unchanged.',
+    },
+    metalness: {
+      type: 'NUMBER',
+      nullable: true,
+      description: 'set_material_override only: 0 (dielectric) to 1 (bare metal). Null when unchanged.',
+    },
+    finish: {
+      type: 'STRING',
+      nullable: true,
+      description: 'set_material_override only: e.g. "matte", "polished". Null when unchanged.',
+    },
+    colorHex: {
+      type: 'STRING',
+      nullable: true,
+      description:
+        'set_light_property only: the new light colour, CSS hex - e.g. shift warmer/cooler in ' +
+        'response to "warm up"/"cool down the lighting". Null when colour is unchanged.',
+    },
+    intensity: {
+      type: 'NUMBER',
+      nullable: true,
+      description: 'set_light_property only: the new light intensity (absolute, not a delta). Null when unchanged.',
+    },
+    distance: {
+      type: 'NUMBER',
+      nullable: true,
+      description: 'set_light_property only: the new falloff distance in metres (absolute). Null when unchanged.',
+    },
+    visible: {
+      type: 'BOOLEAN',
+      nullable: true,
+      description: 'set_visibility only: true to show the node, false to hide it.',
+    },
+    propKind: {
+      type: 'STRING',
+      nullable: true,
+      format: 'enum',
+      enum: ['plinth', 'rug', 'partition', 'planter', 'side_table', 'floor_lamp'],
+      description: 'add_prop only: which kind of simple staging prop to add.',
+    },
+    name: {
+      type: 'STRING',
+      nullable: true,
+      description: "add_prop only: display name for the new prop. Null to use the prop kind's default label.",
+    },
+  },
+  required: ['kind'],
+} as const;
+
+/** See `interpretSceneCommand` in lib/ai/gemini.ts (issue #60). */
+export const SCENE_COMMAND_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    mutations: {
+      type: 'ARRAY',
+      items: SCENE_MUTATION_SCHEMA,
+      description:
+        'Ordered list of concrete edits this command implies, using ONLY the supported ' +
+        'mutation kinds. Empty array when nothing in the command maps to one.',
+    },
+    unresolved: {
+      type: 'ARRAY',
+      items: { type: 'STRING' },
+      description:
+        'Any distinct part of the command that could not be turned into a supported mutation - ' +
+        'an unsupported kind of edit, or one naming a piece/material that is not listed - given ' +
+        'in the operator\'s own words rather than guessed at. Empty when the whole command was understood.',
+    },
+  },
+  required: ['mutations', 'unresolved'],
+} as const;
+
 export const SCENE_DIRECTION_SCHEMA = {
   type: 'OBJECT',
   properties: {
