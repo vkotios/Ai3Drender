@@ -3,8 +3,8 @@ import { GoogleGenAI } from '@google/genai';
 import { env, hasGemini } from '@/lib/env';
 import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, SceneDirection } from '@/lib/types';
 
-import { offlineFurnitureSpec, offlineSceneDirection } from './offline';
-import { FURNITURE_SPEC_SCHEMA, SCENE_DIRECTION_SCHEMA } from './schemas';
+import { offlineFurnitureSpec, offlineMaterialCorrection, offlineSceneDirection } from './offline';
+import { FURNITURE_SPEC_SCHEMA, MATERIAL_CORRECTION_SCHEMA, SCENE_DIRECTION_SCHEMA } from './schemas';
 
 export interface ImageInput {
   bytes: Uint8Array;
@@ -426,7 +426,92 @@ ${JSON.stringify(spec, null, 2)}
 }
 
 /* -------------------------------------------------------------------------- */
-/* 5. Fast photoreal concept pass over a viewport capture                     */
+/* 5. Spot-fix one material's PBR values from a free-text instruction         */
+/* -------------------------------------------------------------------------- */
+
+export type MaterialCorrection = Pick<
+  MaterialSpec,
+  'baseColorHex' | 'roughness' | 'metalness' | 'sheen' | 'clearcoat' | 'finish' | 'notes'
+>;
+
+/**
+ * Apply a plain-language correction ("make this darker walnut") to ONE
+ * material's PBR values, without touching the spec or mesh around it.
+ *
+ * This is the lighter counterpart to `refineSpec`: same "describe the change,
+ * get structured values back" shape, but scoped to a single material entry
+ * rather than the whole furniture spec, so a wrong colour or finish doesn't
+ * force a full note-and-revise round that also touches the mesh. See the
+ * material rebind route (`PATCH .../materials/:materialId`), which calls this
+ * for a free-text `instruction` the same way it already calls the material
+ * library for a `libraryEntryId`.
+ */
+export async function correctMaterial(
+  material: MaterialSpec,
+  instruction: string,
+): Promise<MaterialCorrection> {
+  if (!hasGemini) return offlineMaterialCorrection(material, instruction);
+
+  const response = await ai().models.generateContent({
+    model: env.geminiTextModel,
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `
+Adjust ONLY the physically-based rendering values below for one furniture material, so
+it matches the requested correction. This is a targeted colour/finish fix to a single
+material, not a redesign - do not change kind, and change roughness/metalness/sheen/
+clearcoat only as far as the requested finish actually implies.
+
+Current material:
+${JSON.stringify(
+  {
+    name: material.name,
+    kind: material.kind,
+    baseColorHex: material.baseColorHex,
+    roughness: material.roughness,
+    metalness: material.metalness,
+    sheen: material.sheen,
+    clearcoat: material.clearcoat,
+    finish: material.finish,
+  },
+  null,
+  2,
+)}
+
+Requested correction:
+${instruction}
+`.trim(),
+          },
+        ],
+      },
+    ],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: MATERIAL_CORRECTION_SCHEMA as never,
+      temperature: 0.3,
+    },
+  });
+
+  const parsed = parseJson<Omit<MaterialCorrection, 'notes'>>(response.text ?? '', 'correctMaterial');
+  const clamp = (n: number, lo: number, hi: number) =>
+    Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : lo;
+
+  return {
+    baseColorHex: /^#[0-9a-f]{6}$/i.test(parsed.baseColorHex) ? parsed.baseColorHex : material.baseColorHex,
+    roughness: clamp(parsed.roughness, 0, 1),
+    metalness: clamp(parsed.metalness, 0, 1),
+    sheen: clamp(parsed.sheen ?? material.sheen, 0, 1),
+    clearcoat: clamp(parsed.clearcoat ?? material.clearcoat, 0, 1),
+    finish: parsed.finish || material.finish,
+    notes: `Spot-fixed via Gemini per instruction: "${instruction.trim()}".`,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 6. Fast photoreal concept pass over a viewport capture                     */
 /* -------------------------------------------------------------------------- */
 
 /**

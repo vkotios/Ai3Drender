@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { offlineFurnitureSpec, offlineSceneDirection } from '@/lib/ai/offline';
+import { offlineFurnitureSpec, offlineMaterialCorrection, offlineSceneDirection } from '@/lib/ai/offline';
+import { makeMaterial } from '../fixtures';
 
 const HEX = /^#[0-9a-f]{6}$/i;
 
@@ -60,6 +61,78 @@ describe('offlineFurnitureSpec', () => {
     for (const component of spec.components) {
       expect(ids.has(component.materialId)).toBe(true);
     }
+  });
+});
+
+describe('offlineMaterialCorrection', () => {
+  it('is deterministic for the same material id and instruction', () => {
+    const material = makeMaterial();
+    const a = offlineMaterialCorrection(material, 'make this darker walnut');
+    const b = offlineMaterialCorrection(material, 'make this darker walnut');
+    expect(a).toEqual(b);
+  });
+
+  it('darkens the base colour for a "darker" instruction, without touching metalness/sheen', () => {
+    const material = makeMaterial();
+    const correction = offlineMaterialCorrection(material, 'make this darker walnut');
+    expect(correction.baseColorHex).toEqual(expect.stringMatching(HEX));
+    expect(correction.baseColorHex).not.toBe(material.baseColorHex);
+
+    const parse = (hex: string) => parseInt(hex.slice(1), 16);
+    expect(parse(correction.baseColorHex)).toBeLessThan(parse(material.baseColorHex));
+    expect(correction.metalness).toBe(material.metalness);
+    expect(correction.sheen).toBe(material.sheen);
+  });
+
+  it('lightens the base colour for a "lighter" instruction', () => {
+    const material = makeMaterial();
+    const correction = offlineMaterialCorrection(material, 'make this a lighter, bleached tone');
+    const parse = (hex: string) => parseInt(hex.slice(1), 16);
+    expect(parse(correction.baseColorHex)).toBeGreaterThan(parse(material.baseColorHex));
+  });
+
+  it('raises roughness and drops clearcoat for a "matte" instruction', () => {
+    const material = makeMaterial({ roughness: 0.4, clearcoat: 0.5 });
+    const correction = offlineMaterialCorrection(material, 'give this a matte finish');
+    expect(correction.roughness).toBeGreaterThan(material.roughness);
+    expect(correction.clearcoat).toBeLessThan(material.clearcoat);
+    expect(correction.finish).toBe('matte');
+  });
+
+  it('lowers roughness and raises clearcoat for a "glossy" instruction', () => {
+    const material = makeMaterial({ roughness: 0.6, clearcoat: 0.1 });
+    const correction = offlineMaterialCorrection(material, 'make this glossy and polished');
+    expect(correction.roughness).toBeLessThan(material.roughness);
+    expect(correction.clearcoat).toBeGreaterThan(material.clearcoat);
+  });
+
+  it('still changes something for an instruction with no recognised keyword, never a no-op', () => {
+    const material = makeMaterial();
+    const correction = offlineMaterialCorrection(material, 'make it pop a bit more');
+    // The fallback nudge, not just the always-different notes text, actually fired.
+    expect(correction.baseColorHex).not.toBe(material.baseColorHex);
+    expect(correction.roughness).not.toBe(material.roughness);
+  });
+
+  it('always returns a valid, clamped result across many instructions (guards against NaN/out-of-range/invalid hex)', () => {
+    const material = makeMaterial();
+    for (let i = 0; i < 200; i += 1) {
+      const correction = offlineMaterialCorrection(material, `instruction number ${i} darker glossy metallic`);
+      expect(correction.baseColorHex).toEqual(expect.stringMatching(HEX));
+      expect(correction.roughness).toBeGreaterThanOrEqual(0);
+      expect(correction.roughness).toBeLessThanOrEqual(1);
+      expect(correction.metalness).toBeGreaterThanOrEqual(0);
+      expect(correction.metalness).toBeLessThanOrEqual(1);
+      expect(correction.clearcoat).toBeGreaterThanOrEqual(0);
+      expect(correction.clearcoat).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('notes the instruction and that this ran offline, for traceability', () => {
+    const material = makeMaterial();
+    const correction = offlineMaterialCorrection(material, 'make this darker walnut');
+    expect(correction.notes).toMatch(/darker walnut/);
+    expect(correction.notes).toMatch(/offline/i);
   });
 });
 

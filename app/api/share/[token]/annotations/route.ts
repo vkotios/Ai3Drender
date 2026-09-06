@@ -24,7 +24,10 @@ export async function POST(request: Request, { params }: Params) {
   const { token } = await params;
   const resolution = await resolveShareToken(token);
   if (!resolution.ok) return apiError(resolution.message, resolution.status);
-  const { store, scene } = resolution.context;
+  const { store, scene, role } = resolution.context;
+  // The UI never offers a way to pin a note on a viewer link, but that is not
+  // the security boundary - a viewer-role token must be rejected here too.
+  if (role !== 'commenter') return apiError('This link is view-only', 403);
 
   const body = (await request.json()) as {
     clientName?: string;
