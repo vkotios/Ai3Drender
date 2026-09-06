@@ -211,6 +211,12 @@ export class SupabaseStore implements Store {
     // Every child table cascades from projects, so one delete is enough.
     const { error } = await this.db.from('projects').delete().eq('id', id);
     if (error) throw new Error(`deleteProject: ${error.message}`);
+    // Every blob for this project lives under one prefix. A stranded file is
+    // better than a project whose row delete failed because storage hiccuped,
+    // so this is best-effort: log and move on.
+    await this.deleteBlobPrefix(id).catch((cause) => {
+      console.error(`[store] deleteProject: failed to remove blobs for project ${id}`, cause);
+    });
   }
 
   /* Source images ---------------------------------------------------------- */
@@ -251,8 +257,15 @@ export class SupabaseStore implements Store {
   }
 
   async deleteSourceImage(id: Uuid): Promise<void> {
+    // Read the key before the row disappears - nothing else records it.
+    const existing = await this.db.from('source_images').select('path').eq('id', id).maybeSingle();
     const { error } = await this.db.from('source_images').delete().eq('id', id);
     if (error) throw new Error(`deleteSourceImage: ${error.message}`);
+    const path: string | undefined = existing.data?.path;
+    if (!path) return;
+    await this.deleteBlob(path).catch((cause) => {
+      console.error(`[store] deleteSourceImage: failed to remove blob ${path}`, cause);
+    });
   }
 
   /* Assets ----------------------------------------------------------------- */
@@ -297,8 +310,37 @@ export class SupabaseStore implements Store {
   }
 
   async deleteAsset(id: Uuid): Promise<void> {
+    // Every synthesized view and the reconstructed mesh carry their own
+    // storage key on the version row, so no path convention needs guessing -
+    // just read them before the cascade takes the versions with the asset.
+    const versions = await this.db
+      .from('asset_versions')
+      .select('views, mesh_path')
+      .eq('asset_id', id);
+
     const { error } = await this.db.from('furniture_assets').delete().eq('id', id);
     if (error) throw new Error(`deleteAsset: ${error.message}`);
+
+    if (versions.error) {
+      console.error(`[store] deleteAsset: could not look up blobs for asset ${id}`, versions.error);
+      return;
+    }
+    // A `fromSource` view is not the asset's to delete: analysis points it
+    // straight at the project's own source-image blob rather than copying
+    // it, and that blob is only ever the source image row's to delete.
+    const keys = versions.data.flatMap((v: Row) => [
+      ...((v.views ?? []) as { path: string; fromSource: boolean }[])
+        .filter((view) => !view.fromSource)
+        .map((view) => view.path),
+      ...(v.mesh_path ? [v.mesh_path as string] : []),
+    ]);
+    await Promise.all(
+      keys.map((key) =>
+        this.deleteBlob(key).catch((cause) => {
+          console.error(`[store] deleteAsset: failed to remove blob ${key}`, cause);
+        }),
+      ),
+    );
   }
 
   /* Asset versions --------------------------------------------------------- */
@@ -416,8 +458,18 @@ export class SupabaseStore implements Store {
   }
 
   async deleteScene(id: Uuid): Promise<void> {
+    // Read the owning project before the row disappears - the delete-by-prefix
+    // needs it and the cascade would otherwise take it with the scene.
+    const existing = await this.db.from('scenes').select('project_id').eq('id', id).maybeSingle();
     const { error } = await this.db.from('scenes').delete().eq('id', id);
     if (error) throw new Error(`deleteScene: ${error.message}`);
+    const projectId: string | undefined = existing.data?.project_id;
+    if (!projectId) return;
+    // One prefix covers every pathtraced/concept render for this scene, plus
+    // any viewport capture a crashed concept-render job never cleaned up.
+    await this.deleteBlobPrefix(`${projectId}/renders/${id}`).catch((cause) => {
+      console.error(`[store] deleteScene: failed to remove render blobs for scene ${id}`, cause);
+    });
   }
 
   /* Jobs ------------------------------------------------------------------- */
@@ -669,6 +721,46 @@ export class SupabaseStore implements Store {
   async deleteBlob(key: string): Promise<void> {
     const { error } = await this.db.storage.from(BUCKET).remove([key]);
     if (error) throw new Error(`deleteBlob ${key}: ${error.message}`);
+  }
+
+  async deleteBlobPrefix(prefix: string): Promise<void> {
+    // Refuse the one input that would otherwise sweep the whole bucket -
+    // mirrors LocalStore, whose blobPath() rejects an empty key the same way.
+    if (!prefix) throw new Error('deleteBlobPrefix: refusing to sweep the whole bucket');
+    const keys = await this.listBlobKeys(prefix);
+    if (keys.length === 0) return;
+    // Storage's remove() takes a flat array of full paths; batch defensively
+    // so one very large project cannot blow past whatever limit it has.
+    for (let i = 0; i < keys.length; i += 100) {
+      const { error } = await this.db.storage.from(BUCKET).remove(keys.slice(i, i + 100));
+      if (error) throw new Error(`deleteBlobPrefix ${prefix}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Storage "folders" are only key prefixes - there is no recursive list or
+   * delete API - so covering one means walking it by hand: list immediate
+   * children, recurse into the ones that are themselves prefixes (a `null`
+   * id marks those), and collect every real object's full path.
+   */
+  async listBlobKeys(prefix = ''): Promise<string[]> {
+    const keys: string[] = [];
+    const limit = 1000;
+    for (let offset = 0; ; offset += limit) {
+      const { data, error } = await this.db.storage.from(BUCKET).list(prefix, { limit, offset });
+      if (error) throw new Error(`listBlobKeys ${prefix}: ${error.message}`);
+      if (!data || data.length === 0) break;
+      for (const entry of data) {
+        const full = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.id === null) {
+          keys.push(...(await this.listBlobKeys(full)));
+        } else {
+          keys.push(full);
+        }
+      }
+      if (data.length < limit) break;
+    }
+    return keys;
   }
 
   async blobUrl(key: string): Promise<string> {
