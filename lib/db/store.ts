@@ -6,6 +6,7 @@ import type {
   Job,
   JobKind,
   JobStatus,
+  MaterialLibraryEntry,
   Project,
   Scene,
   SceneDoc,
@@ -47,6 +48,57 @@ export interface NewJob {
   input?: Record<string, unknown>;
   /** Defaults to 3. Set to 1 for work that must never be repeated. */
   maxAttempts?: number;
+}
+
+export type NewMaterialLibraryEntry = Omit<
+  MaterialLibraryEntry,
+  'id' | 'createdAt' | 'updatedAt'
+>;
+
+export type MaterialLibraryEntryPatch = Partial<
+  Pick<
+    MaterialLibraryEntry,
+    | 'name'
+    | 'code'
+    | 'kind'
+    | 'baseColorHex'
+    | 'roughness'
+    | 'metalness'
+    | 'sheen'
+    | 'clearcoat'
+    | 'finish'
+    | 'notes'
+    | 'swatchPath'
+    | 'archivedAt'
+  >
+>;
+
+/** One component, in one asset version, bound to a library entry. */
+export interface MaterialLibraryUsageComponent {
+  name: string;
+  role: string;
+}
+
+/**
+ * One asset version whose spec currently binds a material to a given library
+ * entry, and which components there use it. Returned by
+ * `listMaterialLibraryUsage` - a derived read over `asset_versions`, not a
+ * stored join, so a discontinued material can be traced without a separate
+ * table to keep in sync as specs change.
+ */
+export interface MaterialLibraryUsage {
+  projectId: Uuid;
+  projectName: string;
+  assetId: Uuid;
+  assetName: string;
+  assetVersionId: Uuid;
+  versionNumber: number;
+  /** True when this version is the asset's current (displayed) version. */
+  isCurrentVersion: boolean;
+  /** The materials[].id within this version's spec that is bound. */
+  materialId: string;
+  materialName: string;
+  components: MaterialLibraryUsageComponent[];
 }
 
 /**
@@ -155,4 +207,19 @@ export interface Store {
   listBlobKeys(prefix?: string): Promise<string[]>;
   /** A URL the browser can fetch. May be signed and time-limited. */
   blobUrl(key: string): Promise<string>;
+
+  /* Material library (account-scoped by ownerId, see MaterialLibraryEntry) */
+  createMaterialLibraryEntry(input: NewMaterialLibraryEntry): Promise<MaterialLibraryEntry>;
+  getMaterialLibraryEntry(id: Uuid): Promise<MaterialLibraryEntry | null>;
+  listMaterialLibraryEntries(
+    ownerId: string,
+    options?: { includeArchived?: boolean },
+  ): Promise<MaterialLibraryEntry[]>;
+  updateMaterialLibraryEntry(
+    id: Uuid,
+    patch: MaterialLibraryEntryPatch,
+  ): Promise<MaterialLibraryEntry>;
+  deleteMaterialLibraryEntry(id: Uuid): Promise<void>;
+  /** Every piece, across every project owned by `ownerId`, bound to this entry. */
+  listMaterialLibraryUsage(ownerId: string, libraryEntryId: Uuid): Promise<MaterialLibraryUsage[]>;
 }

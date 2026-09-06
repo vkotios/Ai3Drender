@@ -92,7 +92,13 @@ async function runAnalyze(ctx: StageContext): Promise<Record<string, unknown>> {
 
   await store.updateAsset(assetId, { status: 'analyzing' });
   await ctx.report(0.35, 'Reading form, materials and dimensions');
-  const { spec, source } = await analyzeFurniture(images, project?.brief ?? null);
+  // Offer the account's known materials as candidates so the vision pass
+  // matches the piece against real materials instead of re-inventing a
+  // near-miss of one that already exists.
+  const libraryCandidates = project
+    ? await store.listMaterialLibraryEntries(project.ownerId)
+    : [];
+  const { spec, source } = await analyzeFurniture(images, project?.brief ?? null, libraryCandidates);
 
   await ctx.report(0.8, 'Recording specification');
   const version = await store.createAssetVersion({
