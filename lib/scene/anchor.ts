@@ -24,10 +24,17 @@ export interface ResolvedComponent {
  * Our own massing meshes name each part after its component, so this is exact.
  * Vendor meshes are often a single merged object, in which case nothing
  * resolves and the caller falls back to the positional description alone.
+ *
+ * Takes only the `{ name, role }` shape of each component (not the full
+ * `FurnitureSpec`) so this also serves callers that only have a bare
+ * name/role list to hand - e.g. `evaluateReconstruction` (lib/ai/gemini.ts,
+ * issue #56), which resolves a perceptual-QA defect's free-text part
+ * reference against the piece's named components the same way a rebake
+ * target is resolved (`resolveTargetComponent` in lib/pipeline/index.ts).
  */
 export function resolveComponent(
   partName: string | null,
-  spec: FurnitureSpec,
+  spec: { components: Pick<FurnitureSpec['components'][number], 'name' | 'role'>[] },
 ): ResolvedComponent {
   if (!partName) return { componentName: null, componentRole: null };
 

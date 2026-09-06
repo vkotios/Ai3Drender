@@ -40,7 +40,7 @@ afterEach(() => {
 
 describe('evaluateReconstruction', () => {
   it('sends the source photos and the rendered mesh views as inline image parts, with a JSON schema config', async () => {
-    generateContent.mockResolvedValue({ text: JSON.stringify({ score: 91, issues: [] }) });
+    generateContent.mockResolvedValue({ text: JSON.stringify({ score: 91, defects: [] }) });
 
     const spec = makeFurnitureSpec();
     await evaluateReconstruction([photo], [meshView], spec);
@@ -48,7 +48,7 @@ describe('evaluateReconstruction', () => {
     expect(generateContent).toHaveBeenCalledTimes(1);
     const call = generateContent.mock.calls[0][0];
     expect(call.config.responseMimeType).toBe('application/json');
-    expect(call.config.responseSchema.required).toEqual(expect.arrayContaining(['score', 'issues']));
+    expect(call.config.responseSchema.required).toEqual(expect.arrayContaining(['score', 'defects']));
 
     const parts = call.contents[0].parts as Record<string, unknown>[];
     const imageParts = parts.filter((p) => 'inlineData' in p);
@@ -60,28 +60,93 @@ describe('evaluateReconstruction', () => {
     // The piece's own description reaches the prompt, so the model has context.
     const text = parts.map((p) => (p as { text?: string }).text).filter(Boolean).join('\n');
     expect(text).toContain(spec.displayName);
+    // The piece's named components are offered too, so the model can attribute a
+    // defect to one of them (see `formatKnownComponents`).
+    expect(text).toContain('"Legs" (role: leg)');
   });
 
-  it('parses a fenced JSON response, clamps the score, and drops empty issue strings', async () => {
+  it('parses a fenced JSON response, clamps the score, and resolves a defect componentName against the spec', async () => {
     generateContent.mockResolvedValue({
-      text: '```json\n{"score": 143, "issues": ["missing armrest", ""]}\n```',
+      text:
+        '```json\n' +
+        JSON.stringify({
+          score: 143,
+          defects: [
+            { category: 'missing_geometry', description: 'missing armrest', severity: 'severe', componentName: 'Legs' },
+          ],
+        }) +
+        '\n```',
     });
 
     const result = await evaluateReconstruction([photo], [meshView], makeFurnitureSpec());
 
     expect(result.source).toBe('gemini');
     expect(result.score).toBe(100); // clamped to the documented 0-100 range
-    expect(result.issues).toEqual(['missing armrest']);
+    expect(result.defects).toEqual([
+      { category: 'missing_geometry', description: 'missing armrest', severity: 'severe', componentName: 'Legs' },
+    ]);
+  });
+
+  it('drops a defect with an unrecognised category or an empty description, but keeps a valid one', async () => {
+    generateContent.mockResolvedValue({
+      text: JSON.stringify({
+        score: 50,
+        defects: [
+          { category: 'made_up_category', description: 'not a real category', severity: 'minor', componentName: null },
+          { category: 'form_defect', description: '   ', severity: 'minor', componentName: null },
+          { category: 'texture_defect', description: 'seat cushion is grey, not tan', severity: 'moderate', componentName: null },
+        ],
+      }),
+    });
+
+    const result = await evaluateReconstruction([photo], [meshView], makeFurnitureSpec());
+    expect(result.defects).toEqual([
+      { category: 'texture_defect', description: 'seat cushion is grey, not tan', severity: 'moderate', componentName: null },
+    ]);
+  });
+
+  it('defaults an unrecognised severity to "moderate" rather than dropping the defect', async () => {
+    generateContent.mockResolvedValue({
+      text: JSON.stringify({
+        score: 50,
+        defects: [{ category: 'surface_defect', description: 'rough patch on the seat', severity: 'catastrophic', componentName: null }],
+      }),
+    });
+
+    const result = await evaluateReconstruction([photo], [meshView], makeFurnitureSpec());
+    expect(result.defects[0].severity).toBe('moderate');
+  });
+
+  it("resolves a defect's componentName by role too, and nulls it out when it matches no known component", async () => {
+    generateContent.mockResolvedValue({
+      text: JSON.stringify({
+        score: 50,
+        defects: [
+          { category: 'form_defect', description: 'legs read too thick', severity: 'moderate', componentName: 'leg' },
+          { category: 'form_defect', description: 'overall proportions off', severity: 'minor', componentName: 'nonexistent part' },
+        ],
+      }),
+    });
+
+    const result = await evaluateReconstruction([photo], [meshView], makeFurnitureSpec());
+    expect(result.defects[0].componentName).toBe('Legs'); // matched by role, canonicalised to the component's name
+    expect(result.defects[1].componentName).toBeNull();
   });
 
   it('clamps a negative or missing score into range rather than propagating garbage', async () => {
-    generateContent.mockResolvedValue({ text: JSON.stringify({ score: -12, issues: [] }) });
+    generateContent.mockResolvedValue({ text: JSON.stringify({ score: -12, defects: [] }) });
     const negative = await evaluateReconstruction([photo], [meshView], makeFurnitureSpec());
     expect(negative.score).toBe(0);
 
-    generateContent.mockResolvedValue({ text: JSON.stringify({ issues: [] }) });
+    generateContent.mockResolvedValue({ text: JSON.stringify({ defects: [] }) });
     const missing = await evaluateReconstruction([photo], [meshView], makeFurnitureSpec());
     expect(missing.score).toBe(0);
+  });
+
+  it('treats a non-array defects field as no defects rather than throwing', async () => {
+    generateContent.mockResolvedValue({ text: JSON.stringify({ score: 80, defects: 'not an array' }) });
+    const result = await evaluateReconstruction([photo], [meshView], makeFurnitureSpec());
+    expect(result.defects).toEqual([]);
   });
 
   it('falls back to the offline placeholder without calling the model when there are no mesh views', async () => {

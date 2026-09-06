@@ -82,7 +82,7 @@ describe('pipeline: analyze -> synthesize_views -> reconstruct', () => {
     // No GEMINI_API_KEY in this test env: the perceptual QA step still runs
     // and stores a result, but it's the documented offline placeholder, not a
     // real vision-model verdict.
-    expect(version!.qaResult).toEqual({ score: 100, issues: [], source: 'offline' });
+    expect(version!.qaResult).toEqual({ score: 100, defects: [], source: 'offline' });
 
     const meshBlob = await store.getBlob(version!.meshPath!);
     expect(meshBlob).not.toBeNull();
