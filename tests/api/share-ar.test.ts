@@ -82,6 +82,7 @@ beforeEach(async () => {
     provider: 'stub',
     providerJobId: null,
     refinement: null,
+    qaResult: null,
     acceptedAt: null,
   });
 
@@ -113,7 +114,10 @@ beforeEach(async () => {
   });
 
   vi.mocked(resolveShareToken).mockReset();
-  vi.mocked(resolveShareToken).mockResolvedValue({ ok: true, context: { store, scene } });
+  vi.mocked(resolveShareToken).mockResolvedValue({
+    ok: true,
+    context: { store, scene, role: 'commenter' },
+  });
 });
 
 afterEach(async () => {
@@ -167,6 +171,7 @@ describe('GET /api/share/[token]/ar/[assetVersionId]', () => {
       provider: 'stub',
       providerJobId: null,
       refinement: null,
+      qaResult: null,
       acceptedAt: null,
     });
 
