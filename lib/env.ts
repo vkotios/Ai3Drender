@@ -33,6 +33,11 @@ export const env = {
   falMeshModel: clean(process.env.FAL_MESH_MODEL) ?? 'fal-ai/hunyuan3d-v21',
 
   appUrl: clean(process.env.NEXT_PUBLIC_APP_URL) ?? 'http://localhost:3000',
+
+  // Lets a scheduled trigger (Vercel Cron, or any external cron service) call
+  // POST /api/jobs/tick without a signed-in session. Unset => that route only
+  // accepts the studio's own authenticated poll, same as before this existed.
+  cronSecret: clean(process.env.CRON_SECRET),
 } as const;
 
 /** True when Supabase is configured; otherwise the on-disk LocalStore is used. */
