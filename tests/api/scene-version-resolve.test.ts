@@ -100,6 +100,7 @@ beforeEach(async () => {
     provider: 'test',
     providerJobId: null,
     refinement: null,
+    qaResult: null,
     acceptedAt: null,
   });
 
@@ -116,6 +117,7 @@ beforeEach(async () => {
     provider: 'test',
     providerJobId: null,
     refinement: null,
+    qaResult: null,
     acceptedAt: null,
   });
 
