@@ -12,10 +12,12 @@ import type {
   Project,
   Scene,
   SceneRender,
+  SceneShareLink,
   SceneVersion,
   SourceImage,
   Uuid,
 } from '@/lib/types';
+import { generateShareToken, hashShareToken } from '@/lib/share/token';
 import type {
   Blob,
   MaterialLibraryEntryPatch,
@@ -28,6 +30,7 @@ import type {
   NewSceneRender,
   NewProject,
   NewScene,
+  NewShareLink,
   NewSourceImage,
   Store,
 } from './store';
@@ -109,6 +112,10 @@ const toScene = (r: Row): Scene => ({
   doc: r.doc,
   direction: r.direction,
   acceptedAt: r.accepted_at,
+  clientApproval: r.client_approval ?? 'pending',
+  clientApprovalAt: r.client_approval_at,
+  clientApprovalName: r.client_approval_name,
+  clientApprovalNote: r.client_approval_note,
   version: r.version,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
@@ -138,8 +145,22 @@ const toAnnotation = (r: Row): Annotation => ({
   anchorDescription: r.anchor_description,
   body: r.body,
   status: r.status,
+  source: r.source ?? 'internal',
+  clientName: r.client_name,
   resolvedByVersionId: r.resolved_by_version_id,
   staleNote: r.stale_note,
+  createdAt: r.created_at,
+});
+
+const toShareLink = (r: Row): SceneShareLink => ({
+  id: r.id,
+  sceneId: r.scene_id,
+  createdBy: r.created_by,
+  role: r.role,
+  label: r.label,
+  expiresAt: r.expires_at,
+  revokedAt: r.revoked_at,
+  lastAccessedAt: r.last_accessed_at,
   createdAt: r.created_at,
 });
 
@@ -485,6 +506,10 @@ export class SupabaseStore implements Store {
     if (patch.doc !== undefined) update.doc = patch.doc;
     if (patch.direction !== undefined) update.direction = patch.direction;
     if (patch.acceptedAt !== undefined) update.accepted_at = patch.acceptedAt;
+    if (patch.clientApproval !== undefined) update.client_approval = patch.clientApproval;
+    if (patch.clientApprovalAt !== undefined) update.client_approval_at = patch.clientApprovalAt;
+    if (patch.clientApprovalName !== undefined) update.client_approval_name = patch.clientApprovalName;
+    if (patch.clientApprovalNote !== undefined) update.client_approval_note = patch.clientApprovalNote;
 
     // `version` itself is never set here - a trigger bumps it whenever `doc`
     // actually changes. The `.eq('version', expectedVersion)` below is the
@@ -549,6 +574,80 @@ export class SupabaseStore implements Store {
       .maybeSingle();
     if (res.error) throw new Error(`getSceneVersion: ${res.error.message}`);
     return res.data ? toSceneVersion(res.data) : null;
+  }
+
+  /* Scene share links -------------------------------------------------------
+   * The raw token is hashed before it ever reaches the database - only the
+   * caller that just created it sees the clear value. */
+
+  async createShareLink(input: NewShareLink): Promise<{ link: SceneShareLink; token: string }> {
+    const token = generateShareToken();
+    const res = await this.db
+      .from('scene_share_links')
+      .insert({
+        scene_id: input.sceneId,
+        created_by: input.createdBy,
+        role: input.role ?? 'commenter',
+        label: input.label ?? null,
+        expires_at: input.expiresAt ?? null,
+        token_hash: hashShareToken(token),
+      })
+      .select()
+      .single();
+    return { link: toShareLink(unwrap('createShareLink', res)), token };
+  }
+
+  async listShareLinks(sceneId: Uuid): Promise<SceneShareLink[]> {
+    const res = await this.db
+      .from('scene_share_links')
+      .select('*')
+      .eq('scene_id', sceneId)
+      .order('created_at', { ascending: false });
+    return unwrap('listShareLinks', res).map(toShareLink);
+  }
+
+  async getShareLink(id: Uuid): Promise<SceneShareLink | null> {
+    const res = await this.db.from('scene_share_links').select('*').eq('id', id).maybeSingle();
+    if (res.error) throw new Error(`getShareLink: ${res.error.message}`);
+    return res.data ? toShareLink(res.data) : null;
+  }
+
+  async getShareLinkByToken(token: string): Promise<SceneShareLink | null> {
+    const res = await this.db
+      .from('scene_share_links')
+      .select('*')
+      .eq('token_hash', hashShareToken(token))
+      .maybeSingle();
+    if (res.error) throw new Error(`getShareLinkByToken: ${res.error.message}`);
+    return res.data ? toShareLink(res.data) : null;
+  }
+
+  async revokeShareLink(id: Uuid): Promise<SceneShareLink> {
+    // Idempotent: revoking an already-revoked link keeps its original
+    // revocation time rather than sliding it forward.
+    const existing = await this.db
+      .from('scene_share_links')
+      .select('revoked_at')
+      .eq('id', id)
+      .maybeSingle();
+    if (existing.error) throw new Error(`revokeShareLink: ${existing.error.message}`);
+    if (!existing.data) throw new Error(`share link ${id} not found`);
+
+    const res = await this.db
+      .from('scene_share_links')
+      .update({ revoked_at: existing.data.revoked_at ?? new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    return toShareLink(unwrap('revokeShareLink', res));
+  }
+
+  async touchShareLink(id: Uuid): Promise<void> {
+    const { error } = await this.db
+      .from('scene_share_links')
+      .update({ last_accessed_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) throw new Error(`touchShareLink: ${error.message}`);
   }
 
   /* Jobs ------------------------------------------------------------------- */
@@ -710,6 +809,8 @@ export class SupabaseStore implements Store {
         component_role: input.componentRole,
         anchor_description: input.anchorDescription,
         body: input.body,
+        source: input.source,
+        client_name: input.clientName,
         stale_note: input.staleNote,
       })
       .select()

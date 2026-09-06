@@ -354,6 +354,14 @@ export interface SceneDoc {
   nodes: SceneNode[];
 }
 
+/**
+ * Where a client's review of a shared scene stands.
+ *
+ * Set only through the read-only share view (`/share/[token]`) - the owner
+ * never sets this directly, it is what the client told them.
+ */
+export type ClientApproval = 'pending' | 'approved' | 'changes_requested';
+
 export interface Scene {
   id: Uuid;
   projectId: Uuid;
@@ -362,6 +370,13 @@ export interface Scene {
   /** Art direction produced by Gemini for this scene, kept for traceability. */
   direction: SceneDirection | null;
   acceptedAt: IsoDate | null;
+  /** "Client signed off on this stand" - set from the share view, read here. */
+  clientApproval: ClientApproval;
+  clientApprovalAt: IsoDate | null;
+  /** The name the client typed into the share view when they set the verdict. */
+  clientApprovalName: string | null;
+  /** Free-text reason, mainly useful when changes were requested. */
+  clientApprovalNote: string | null;
   /**
    * Bumped every time `doc` is saved. The studio round-trips whatever value
    * it loaded back with the next save so the server can tell a stale write
@@ -457,6 +472,16 @@ export type AnnotationStatus = 'open' | 'applied' | 'dismissed';
  * The anchor is stored in the ASSET's local space, not world space, so a note
  * survives the piece being moved, rotated or restaged in another booth.
  */
+/**
+ * Who pinned a note.
+ *
+ * 'internal' notes come from an authenticated studio user; 'client' notes
+ * come through a scene share link, from someone with no account at all. Kept
+ * distinct so the review panel can badge them and the model prompt can weigh
+ * them differently if that ever matters.
+ */
+export type AnnotationSource = 'internal' | 'client';
+
 export interface Annotation {
   id: Uuid;
   assetId: Uuid;
@@ -495,6 +520,9 @@ export interface Annotation {
   anchorDescription: string;
   body: string;
   status: AnnotationStatus;
+  source: AnnotationSource;
+  /** Free-text name typed into the share view. Null for internal notes. */
+  clientName: string | null;
   /** The version created in response to this note. */
   resolvedByVersionId: Uuid | null;
   /**
@@ -507,6 +535,37 @@ export interface Annotation {
    * alone; this is only a heads-up that its context may be stale.
    */
   staleNote: string | null;
+  createdAt: IsoDate;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Client review share links                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A tokenized, read-only grant onto one scene.
+ *
+ * This is deliberately shaped as a grant on a resource rather than as
+ * something link-specific: `resourceType`/`resourceId` name what is shared,
+ * `granteeToken` (hashed, never stored in clear) names who holds it. A future
+ * team-access feature can reuse the same shape with a `granteeUserId` instead
+ * of a token and a broader role, without redesigning this table. See the
+ * migration and PR description for the full reasoning.
+ */
+export type ShareRole = 'viewer' | 'commenter';
+
+export interface SceneShareLink {
+  id: Uuid;
+  sceneId: Uuid;
+  /** Viewer id of whoever generated the link. */
+  createdBy: string;
+  /** Always 'commenter' today - clients can pin notes and set approval. */
+  role: ShareRole;
+  /** Optional owner-set label, e.g. "Acme Corp - first pass". */
+  label: string | null;
+  expiresAt: IsoDate | null;
+  revokedAt: IsoDate | null;
+  lastAccessedAt: IsoDate | null;
   createdAt: IsoDate;
 }
 

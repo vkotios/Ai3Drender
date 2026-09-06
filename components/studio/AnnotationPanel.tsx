@@ -201,6 +201,9 @@ export function AnnotationPanel({ sceneId, onChanged }: { sceneId: string; onCha
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <p className="text-xs leading-snug text-shell-100">{annotation.body}</p>
+                          {annotation.source === 'client' && (
+                            <Badge tone="warn">Client{annotation.clientName ? ` · ${annotation.clientName}` : ''}</Badge>
+                          )}
                           {currentVersionNumber(annotation) !== annotation.originVersionNumber && (
                             <span className="shrink-0 rounded-full bg-shell-800 px-1.5 py-0.5 text-[10px] text-shell-400">
                               since v{annotation.originVersionNumber}

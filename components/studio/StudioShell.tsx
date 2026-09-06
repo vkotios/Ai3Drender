@@ -20,6 +20,7 @@ import { AnnotationPanel } from './AnnotationPanel';
 import { Inspector } from './Inspector';
 import { RenderPanel, type StoredRender } from './RenderPanel';
 import { Outliner } from './Outliner';
+import { SharePanel } from './SharePanel';
 import type { GizmoMode, RenderMode, RenderSettings } from './StudioCanvas';
 import { VersionHistory } from './VersionHistory';
 
@@ -75,6 +76,8 @@ export function StudioShell({
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sharePanelOpen, setSharePanelOpen] = useState(false);
+  const [clientApproval, setClientApproval] = useState(scene.clientApproval);
   // Set when a save is rejected because the scene moved on since it was
   // loaded - `current` is the server's own record of where it moved to.
   const [conflict, setConflict] = useState<{ current: Scene } | null>(null);
@@ -307,6 +310,11 @@ export function StudioShell({
         </Link>
         <span className="text-shell-700">/</span>
         <h1 className="text-sm font-medium text-shell-100">{scene.name}</h1>
+        {clientApproval !== 'pending' && (
+          <Badge tone={clientApproval === 'approved' ? 'good' : 'bad'}>
+            {clientApproval === 'approved' ? 'Client approved' : 'Client requested changes'}
+          </Badge>
+        )}
         {dirty && <Badge tone="warn">Unsaved</Badge>}
         {busy && <Badge tone="busy">{busy}…</Badge>}
         {error && (
@@ -367,6 +375,26 @@ export function StudioShell({
           <Button size="sm" onClick={artDirect} disabled={Boolean(busy)}>
             Art-direct
           </Button>
+
+          <div className="relative">
+            <Button size="sm" onClick={() => setSharePanelOpen((v) => !v)}>
+              Share ▾
+            </Button>
+            {sharePanelOpen && (
+              <SharePanel
+                sceneId={scene.id}
+                onClose={() => {
+                  setSharePanelOpen(false);
+                  // The client may have signed off since this page loaded -
+                  // pick that up whenever the owner closes the link panel.
+                  fetch(`/api/scenes/${scene.id}`)
+                    .then((r) => (r.ok ? r.json() : null))
+                    .then((data) => data?.scene && setClientApproval(data.scene.clientApproval))
+                    .catch(() => {});
+                }}
+              />
+            )}
+          </div>
 
           <ExportMenu onExport={handleExport} disabled={Boolean(busy)} />
 

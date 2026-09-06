@@ -142,6 +142,8 @@ export function defineStoreConformance(getStore: () => Store | Promise<Store>) {
       originVersionId: version.id,
       originVersionNumber: version.versionNumber,
       staleNote: null,
+      source: 'internal',
+      clientName: null,
       anchorDescription: 'centre, 0 mm above the floor',
       body: 'A note.',
     });

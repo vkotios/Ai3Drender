@@ -53,6 +53,17 @@ export function getWorkerStore(): Store {
 }
 
 /**
+ * The one entry point local-mode code is allowed to reach the process-wide
+ * LocalStore through outside of getSession/getWorkerStore. `lib/share/access`
+ * needs it directly because a share-link request has neither an owner
+ * session nor worker-style pre-authorised access - the token itself is the
+ * only credential, and validating it is that module's job.
+ */
+export function getLocalStoreForShareAccess(): Store {
+  return getLocalStore();
+}
+
+/**
  * Load a project the viewer is allowed to see. In Supabase mode RLS already
  * filters this, but the explicit owner check keeps the worker path honest too.
  */
