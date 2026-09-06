@@ -33,6 +33,13 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Unit tests run offline: no GEMINI_API_KEY, no Supabase, MESH_PROVIDER
+      # unset (stub). The SupabaseStore conformance suite skips itself unless
+      # SUPABASE_TEST_URL/SUPABASE_TEST_SERVICE_ROLE_KEY point at a real
+      # project - neither is set here, so it is skipped, not run.
+      - name: Test
+        run: npm test
+
       # Deliberately built with no secrets: the app is designed to boot on an
       # empty environment (local disk store, offline analyzer, stub mesh
       # provider). Needing a key to build would be a regression, and this step

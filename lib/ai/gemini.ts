@@ -1,7 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 
 import { env, hasGemini } from '@/lib/env';
-import type { FurnitureSpec, SceneDirection } from '@/lib/types';
+import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, SceneDirection } from '@/lib/types';
 
 import { offlineFurnitureSpec, offlineSceneDirection } from './offline';
 import { FURNITURE_SPEC_SCHEMA, SCENE_DIRECTION_SCHEMA } from './schemas';
@@ -73,14 +73,93 @@ Rules:
   reconstruction would smooth away.
 `.trim();
 
+const LIBRARY_MATCHING_RULES = `
+This manufacturer keeps a catalogue of the real materials it actually uses - fixed
+timbers, fabrics, leathers and finishes, each with a settled colour and surface
+response. Before describing a new material yourself, check it against the "Known
+materials" list below.
+
+- If a surface in the photos is one of these known materials (even if lighting or
+  crop makes it look slightly different here), set that material's libraryMatchId to
+  the candidate's id, and set its own name/kind/finish to match the candidate - do
+  not invent a slightly different variant of a material that already exists.
+- Only leave libraryMatchId null when the surface genuinely is not one of the listed
+  materials. New materials are expected and fine when that is true - never force a
+  match that is not real.
+`.trim();
+
+function formatLibraryCandidates(candidates: MaterialLibraryEntry[]): string {
+  if (candidates.length === 0) return '';
+  const rows = candidates
+    .map(
+      (c) =>
+        `- id "${c.id}": ${c.name}${c.code ? ` (${c.code})` : ''} - ${c.kind}, ${c.finish}, ` +
+        `colour ${c.baseColorHex}`,
+    )
+    .join('\n');
+  return `${LIBRARY_MATCHING_RULES}\n\nKnown materials:\n${rows}`;
+}
+
+/** A material as Gemini actually returns it: MaterialSpec plus the match field. */
+type RawMaterial = MaterialSpec & { libraryMatchId?: string | null };
+
+/**
+ * Resolve each material's `libraryMatchId` against the candidates that were
+ * offered. A matched material's PBR fields are overwritten with the library
+ * entry's canonical values - the whole point is that every piece bound to the
+ * same entry renders identically, not merely similarly - rather than trusting
+ * whatever the model echoed back for them.
+ */
+function resolveLibraryMatches(
+  spec: FurnitureSpec,
+  candidates: MaterialLibraryEntry[],
+): FurnitureSpec {
+  if (candidates.length === 0) return spec;
+  const byId = new Map(candidates.map((c) => [c.id, c]));
+
+  return {
+    ...spec,
+    materials: (spec.materials as RawMaterial[]).map(({ libraryMatchId, ...material }) => {
+      const candidate = libraryMatchId ? byId.get(libraryMatchId) : undefined;
+      if (!candidate) return { ...material, libraryEntryId: null, invented: true };
+      return {
+        ...material,
+        name: candidate.name,
+        kind: candidate.kind,
+        baseColorHex: candidate.baseColorHex,
+        roughness: candidate.roughness,
+        metalness: candidate.metalness,
+        sheen: candidate.sheen,
+        clearcoat: candidate.clearcoat,
+        finish: candidate.finish,
+        libraryEntryId: candidate.id,
+        invented: false,
+      };
+    }),
+  };
+}
+
 export async function analyzeFurniture(
   images: ImageInput[],
   brief?: string | null,
+  /**
+   * The account's known materials, offered as candidates so the model matches
+   * against real materials instead of re-inventing a near-miss of one that
+   * already exists. Pass an empty array (the default) when there is no
+   * library yet, or none configured - every material is then treated as
+   * invented, exactly as before this existed.
+   */
+  libraryCandidates: MaterialLibraryEntry[] = [],
 ): Promise<{ spec: FurnitureSpec; source: 'gemini' | 'offline' }> {
   const usable = images.filter((i) => i.role !== 'mood');
   if (!hasGemini || usable.length === 0) {
-    return { spec: offlineFurnitureSpec(images.map((i) => i.filename), brief), source: 'offline' };
+    return {
+      spec: offlineFurnitureSpec(images.map((i) => i.filename), brief, libraryCandidates),
+      source: 'offline',
+    };
   }
+
+  const candidateBlock = formatLibraryCandidates(libraryCandidates);
 
   const response = await ai().models.generateContent({
     model: env.geminiTextModel,
@@ -89,6 +168,7 @@ export async function analyzeFurniture(
         role: 'user',
         parts: [
           { text: ANALYSIS_PROMPT },
+          ...(candidateBlock ? [{ text: candidateBlock }] : []),
           ...(brief ? [{ text: `Project art direction, for context only:\n${brief}` }] : []),
           ...usable.map(imagePart),
         ],
@@ -102,7 +182,8 @@ export async function analyzeFurniture(
   });
 
   const spec = parseJson<FurnitureSpec>(response.text ?? '', 'analyzeFurniture');
-  return { spec: normalizeSpec(spec), source: 'gemini' };
+  const resolved = resolveLibraryMatches(spec, libraryCandidates);
+  return { spec: normalizeSpec(resolved), source: 'gemini' };
 }
 
 /**
