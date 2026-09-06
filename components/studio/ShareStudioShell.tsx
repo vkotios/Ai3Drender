@@ -18,6 +18,18 @@ const StudioCanvas = dynamic(() => import('./StudioCanvas').then((m) => m.Studio
   ),
 });
 
+// The AR viewer wraps a web component (see ArViewer.tsx) that touches
+// `customElements`/`document` on load - same client-only constraint as the
+// canvas above.
+const ArViewer = dynamic(() => import('./ArViewer').then((m) => m.ArViewer), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full items-center justify-center text-sm text-shell-400">
+      Loading AR viewer…
+    </div>
+  ),
+});
+
 const CLIENT_NAME_KEY = 'ai3drender:share-client-name';
 
 /** Every verdict the client can actively submit - `pending` is a state, not a choice. */
@@ -107,6 +119,7 @@ export function ShareStudioShell({
     note: scene.clientApprovalNote,
   });
   const [reviewNote, setReviewNote] = useState('');
+  const [arVersionId, setArVersionId] = useState<string | null>(null);
   const [reviewChoice, setReviewChoice] = useState<Exclude<ClientApproval, 'pending'>>(
     scene.clientApproval === 'pending' ? 'approved' : scene.clientApproval,
   );
@@ -206,6 +219,8 @@ export function ShareStudioShell({
     byAsset.set(annotation.assetId, [...(byAsset.get(annotation.assetId) ?? []), annotation]);
   }
 
+  const arVersion = versions.find((v) => v.version.id === arVersionId)?.version ?? null;
+
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="flex shrink-0 items-center gap-3 border-b border-shell-800 bg-shell-900 px-4 py-2.5">
@@ -247,6 +262,32 @@ export function ShareStudioShell({
             />
             <p className="mt-1.5 text-[11px] text-shell-400">
               Shown on every note and on your sign-off, so the workshop knows who to ask.
+            </p>
+          </Panel>
+
+          <Panel title="View in AR">
+            {versions.length === 0 ? (
+              <p className="text-xs leading-relaxed text-shell-400">
+                No AR-ready pieces in this stand yet.
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {versions.map(({ version }) => (
+                  <li key={version.id} className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 flex-1 truncate text-xs text-shell-200">
+                      {version.spec.displayName}
+                    </span>
+                    <Button size="sm" onClick={() => setArVersionId(version.id)}>
+                      View in AR
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="mt-2 text-[11px] leading-relaxed text-shell-400">
+              Opens on your phone with an AR button - point your camera at the floor to place it at
+              actual size. Needs Chrome on Android (WebXR/Scene Viewer); iOS support is limited to
+              orbiting the model for now.
             </p>
           </Panel>
 
@@ -382,6 +423,25 @@ export function ShareStudioShell({
         </aside>
         )}
       </div>
+
+      {arVersion && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-shell-950">
+          <header className="flex shrink-0 items-center justify-between gap-3 border-b border-shell-800 px-4 py-2.5">
+            <h2 className="truncate text-sm font-medium text-shell-100">
+              {arVersion.spec.displayName} · AR view
+            </h2>
+            <Button size="sm" variant="ghost" onClick={() => setArVersionId(null)}>
+              Close
+            </Button>
+          </header>
+          <div className="min-h-0 flex-1">
+            <ArViewer
+              src={`/api/share/${token}/ar/${arVersion.id}`}
+              alt={arVersion.spec.displayName}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
