@@ -4,7 +4,9 @@ import { StudioShell } from '@/components/studio/StudioShell';
 import { blobUrlWithExpiry, requireProject } from '@/lib/db';
 import { requireSession } from '@/lib/auth';
 import { hasGemini } from '@/lib/env';
+import { migrateSceneOnLoad } from '@/lib/scene/materialOverrides';
 import type { LoadedVersion } from '@/lib/studio/store';
+import type { MaterialSpec, Uuid } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +22,7 @@ export default async function StudioPage({
   if (!project) notFound();
 
   const { store } = session;
-  const scene = await store.getScene(sceneId);
+  let scene = await store.getScene(sceneId);
   if (!scene || scene.projectId !== project.id) notFound();
 
   // Every finished piece in the project can be staged, so resolve them all
@@ -51,6 +53,13 @@ export default async function StudioPage({
     const { url, expiresAt } = await blobUrlWithExpiry(store, version.meshPath);
     versions.push({ version, meshUrl: url, meshUrlExpiresAt: expiresAt });
   }
+
+  // Rekey any material overrides still written under the pre-fix "material
+  // name" scheme (issue #7) before handing the doc to the client.
+  const specMaterialsByVersionId = new Map<Uuid, readonly MaterialSpec[]>(
+    versions.map((v) => [v.version.id, v.version.spec.materials]),
+  );
+  scene = await migrateSceneOnLoad(store, scene, specMaterialsByVersionId);
 
   const annotations = await store.listAnnotations([
     ...new Set([...available, ...versions].map((v) => v.version.assetId)),

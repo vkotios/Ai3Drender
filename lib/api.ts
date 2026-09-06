@@ -69,3 +69,22 @@ export async function withScene(
     return handler(session, scene);
   });
 }
+
+/**
+ * Resolve a material library entry and check the caller owns it. The library
+ * is account-scoped (ownerId), not project-scoped, so ownership is a direct
+ * comparison rather than a walk back through a project.
+ */
+export async function withMaterialLibraryEntry(
+  entryId: string,
+  handler: (
+    session: Session,
+    entry: NonNullable<Awaited<ReturnType<Session['store']['getMaterialLibraryEntry']>>>,
+  ) => Promise<NextResponse>,
+): Promise<NextResponse> {
+  return withSession(async (session) => {
+    const entry = await session.store.getMaterialLibraryEntry(entryId);
+    if (!entry || entry.ownerId !== session.viewer.id) return apiError('Material not found', 404);
+    return handler(session, entry);
+  });
+}

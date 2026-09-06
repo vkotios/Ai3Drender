@@ -1,4 +1,4 @@
-import type { FurnitureSpec, MaterialSpec, SceneDirection } from '@/lib/types';
+import type { FurnitureSpec, MaterialLibraryEntry, MaterialSpec, SceneDirection } from '@/lib/types';
 
 /**
  * Deterministic stand-in for the Gemini vision pass, used when GEMINI_API_KEY
@@ -119,59 +119,125 @@ function pickProfile(filenames: string[]): CategoryProfile {
 const WOOD_TONES = ['#6B4A2F', '#8B5A2B', '#A9764B', '#4A3423', '#C2A17A'];
 const TEXTILE_TONES = ['#8C8778', '#5C6670', '#9C6B58', '#3F4A45', '#B9AE9B'];
 
-function materialsFor(profile: CategoryProfile, seed: number): MaterialSpec[] {
+/**
+ * Deterministically "match" a synthetic default material against the library
+ * candidates whose kind it could plausibly be, exactly like the vision pass
+ * does but without a model to make the judgement call. Picking the
+ * lowest-id candidate (rather than, say, the newest) keeps the choice stable
+ * across runs given the same library, which is what makes this path testable
+ * without a live model.
+ */
+function matchCandidate(
+  candidates: MaterialLibraryEntry[],
+  kinds: MaterialSpec['kind'][],
+): MaterialLibraryEntry | null {
+  const eligible = candidates
+    .filter((c) => !c.archivedAt && kinds.includes(c.kind))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return eligible[0] ?? null;
+}
+
+/** Build one material entry, bound to `candidate` when one was found. */
+function toMaterial(
+  id: string,
+  fallback: Omit<MaterialSpec, 'id' | 'libraryEntryId' | 'invented'>,
+  candidate: MaterialLibraryEntry | null,
+): MaterialSpec {
+  if (!candidate) return { id, ...fallback, libraryEntryId: null, invented: true };
+  return {
+    id,
+    name: candidate.name,
+    kind: candidate.kind,
+    baseColorHex: candidate.baseColorHex,
+    roughness: candidate.roughness,
+    metalness: candidate.metalness,
+    sheen: candidate.sheen,
+    clearcoat: candidate.clearcoat,
+    finish: candidate.finish,
+    notes: 'Matched against the material library (offline analyzer).',
+    libraryEntryId: candidate.id,
+    invented: false,
+  };
+}
+
+function materialsFor(
+  profile: CategoryProfile,
+  seed: number,
+  libraryCandidates: MaterialLibraryEntry[],
+): MaterialSpec[] {
   const wood = WOOD_TONES[seed % WOOD_TONES.length];
   const textile = TEXTILE_TONES[(seed >>> 3) % TEXTILE_TONES.length];
   const upholstered = profile.components.some((c) => c.materialId === 'upholstery');
 
   const materials: MaterialSpec[] = [
-    {
-      id: 'frame',
-      name: 'Solid timber frame',
-      kind: 'wood',
-      baseColorHex: wood,
-      roughness: 0.55,
-      metalness: 0,
-      sheen: 0,
-      clearcoat: 0.25,
-      finish: 'oiled',
-      notes: 'Offline default. Replace once a vision pass has run on the photos.',
-    },
-    {
-      id: 'accent',
-      name: 'Blackened steel accent',
-      kind: 'metal',
-      baseColorHex: '#2A2A2D',
-      roughness: 0.42,
-      metalness: 1,
-      sheen: 0,
-      clearcoat: 0,
-      finish: 'powder-coated',
-      notes: 'Offline default.',
-    },
+    toMaterial(
+      'frame',
+      {
+        name: 'Solid timber frame',
+        kind: 'wood',
+        baseColorHex: wood,
+        roughness: 0.55,
+        metalness: 0,
+        sheen: 0,
+        clearcoat: 0.25,
+        finish: 'oiled',
+        notes: 'Offline default. Replace once a vision pass has run on the photos.',
+      },
+      matchCandidate(libraryCandidates, ['wood']),
+    ),
+    toMaterial(
+      'accent',
+      {
+        name: 'Blackened steel accent',
+        kind: 'metal',
+        baseColorHex: '#2A2A2D',
+        roughness: 0.42,
+        metalness: 1,
+        sheen: 0,
+        clearcoat: 0,
+        finish: 'powder-coated',
+        notes: 'Offline default.',
+      },
+      matchCandidate(libraryCandidates, ['metal']),
+    ),
   ];
 
   if (upholstered) {
-    materials.unshift({
-      id: 'upholstery',
-      name: 'Wool-blend upholstery',
-      kind: 'fabric',
-      baseColorHex: textile,
-      roughness: 0.92,
-      metalness: 0,
-      sheen: 0.55,
-      clearcoat: 0,
-      finish: 'woven',
-      notes: 'Offline default.',
-    });
+    materials.unshift(
+      toMaterial(
+        'upholstery',
+        {
+          name: 'Wool-blend upholstery',
+          kind: 'fabric',
+          baseColorHex: textile,
+          roughness: 0.92,
+          metalness: 0,
+          sheen: 0.55,
+          clearcoat: 0,
+          finish: 'woven',
+          notes: 'Offline default.',
+        },
+        matchCandidate(libraryCandidates, ['fabric', 'leather']),
+      ),
+    );
   }
   return materials;
 }
 
-export function offlineFurnitureSpec(filenames: string[], brief?: string | null): FurnitureSpec {
+export function offlineFurnitureSpec(
+  filenames: string[],
+  brief?: string | null,
+  /**
+   * The account's known materials. When one matches a synthetic slot's kind,
+   * that slot is bound to it (its PBR fields are the library's, not the
+   * synthetic default) instead of being flagged invented. Mirrors what the
+   * live vision pass does with library candidates, deterministically.
+   */
+  libraryCandidates: MaterialLibraryEntry[] = [],
+): FurnitureSpec {
   const seed = hash(filenames.join('|') || 'ai3drender');
   const profile = pickProfile(filenames);
-  const materials = materialsFor(profile, seed);
+  const materials = materialsFor(profile, seed, libraryCandidates);
 
   return {
     displayName: profile.category.replace(/\b\w/g, (c) => c.toUpperCase()),
