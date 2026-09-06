@@ -7,6 +7,12 @@ import type { Annotation, AssetVersion, Scene, SceneDoc, SceneNode, Uuid } from 
 export interface LoadedVersion {
   version: AssetVersion;
   meshUrl: string | null;
+  /**
+   * When `meshUrl` goes stale, so it can be refreshed ahead of that rather
+   * than trusted forever - see `components/studio/MeshUrlBoundary.tsx`. Null
+   * in local-disk mode, where the URL is stable and never expires.
+   */
+  meshUrlExpiresAt: string | null;
 }
 
 /**

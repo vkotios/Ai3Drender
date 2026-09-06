@@ -36,6 +36,16 @@ const material = {
     clearcoat: { type: 'NUMBER', description: 'Lacquer layer, e.g. 0.8 for polished wood.' },
     finish: { type: 'STRING', description: 'e.g. "brushed", "oiled walnut", "powder-coated".' },
     notes: { type: 'STRING' },
+    libraryMatchId: {
+      type: 'STRING',
+      nullable: true,
+      description:
+        'The id of the candidate material (from the "Known materials" list, if one was ' +
+        'supplied) that this surface actually is. Null when none of the candidates match and ' +
+        'this is a genuinely new material. Set this whenever a candidate is a real match, even ' +
+        'an approximate one - do not leave it null just because the photo shows a slightly ' +
+        'different crop or lighting of the same material.',
+    },
   },
   required: ['id', 'name', 'kind', 'baseColorHex', 'roughness', 'metalness', 'finish'],
 } as const;

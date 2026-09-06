@@ -85,6 +85,24 @@ export interface MaterialSpec {
   /** Human-readable finish, e.g. "brushed", "oiled walnut", "powder-coated". */
   finish: string;
   notes: string;
+  /**
+   * Set when this material is bound to a MaterialLibraryEntry - either because
+   * the vision pass matched it against the account's known materials, or
+   * because a human rebound it afterwards. While bound, every PBR field above
+   * is kept in sync with the library entry's canonical values, so every piece
+   * bound to the same entry renders identically instead of each drifting
+   * slightly on its own. Null (or absent, on specs recorded before this field
+   * existed) for an ad hoc, per-version material with no library counterpart.
+   */
+  libraryEntryId?: string | null;
+  /**
+   * True when the vision pass had library candidates to check against but
+   * found no match, so it invented this material fresh. Surfaced in the UI so
+   * a human can review it and, optionally, promote it into the library.
+   * Always false once libraryEntryId is set. Optional/absent on specs
+   * recorded before this field existed - treated the same as false.
+   */
+  invented?: boolean;
 }
 
 /** A named sub-part of the piece, used to drive per-part material assignment. */
@@ -125,6 +143,47 @@ export interface FurnitureSpec {
   symmetry: 'bilateral' | 'radial' | 'none';
   /** Guidance passed verbatim into the mesh vendor's prompt. */
   reconstructionNotes: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Shared material library                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One real material a manufacturer actually uses - a named timber, fabric,
+ * powder-coat colour or finish, with fixed PBR values - kept apart from any
+ * single piece so the same oak reads identically on every product it appears
+ * on.
+ *
+ * Scoped by `ownerId` (account-level) rather than by project: a manufacturer's
+ * range of finishes does not reset with every new exhibition stand, and
+ * project-scoping would fragment one catalogue across every project the same
+ * account runs. See the PR description for the full rationale.
+ */
+export interface MaterialLibraryEntry {
+  id: Uuid;
+  ownerId: string;
+  name: string;
+  /** Manufacturer SKU or internal code, e.g. "OAK-014". Null when there isn't one. */
+  code: string | null;
+  kind: MaterialKind;
+  baseColorHex: string;
+  roughness: number;
+  metalness: number;
+  sheen: number;
+  clearcoat: number;
+  finish: string;
+  notes: string;
+  /** Storage key of a reference swatch photo, resolved via store.blobUrl. */
+  swatchPath: string | null;
+  /**
+   * Set when the material is discontinued. Kept rather than deleted so past
+   * bindings and usage history stay traceable - the point of tracking usage at
+   * all is to see what a discontinued fabric affects.
+   */
+  archivedAt: IsoDate | null;
+  createdAt: IsoDate;
+  updatedAt: IsoDate;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -191,6 +250,8 @@ export interface AssetVersion {
   meshPath: string | null;
   /** Longest-axis size of the raw mesh, used to scale it to real-world mm. */
   meshExtentMm: number | null;
+  /** Storage key of a small captured PNG of the mesh, for list thumbnails. Null until one is captured. */
+  previewPath: string | null;
   provider: string;
   providerJobId: string | null;
   refinement: RefinementRequest | null;
@@ -239,7 +300,16 @@ export interface SceneNode {
   propKind: PropKind | null;
   /** Set when kind === 'light'. */
   light: SceneLight | null;
-  /** Per-node material tweaks that do not fork the underlying asset version. */
+  /**
+   * Per-node material tweaks that do not fork the underlying asset version.
+   *
+   * Keyed by `MaterialSpec.id` (stable across a refinement even when the
+   * material's display name changes), except for a prop node's single entry
+   * which lives under the literal key `"prop"`. A key that matches neither a
+   * live id nor the mesh's own material name (a vendor mesh with names we do
+   * not control) is left in place rather than silently dropped - see
+   * `lib/scene/materialOverrides.ts`.
+   */
   materialOverrides: Record<string, Partial<MaterialSpec>>;
 }
 
@@ -390,8 +460,22 @@ export type AnnotationStatus = 'open' | 'applied' | 'dismissed';
 export interface Annotation {
   id: Uuid;
   assetId: Uuid;
-  /** The version the note was made against. */
+  /**
+   * The version this note is currently pinned to. For a fresh note this is
+   * the version it was made against; a note still `open` when its version is
+   * superseded is re-pointed here at the newest version instead of going
+   * stale on the old one (see `refine` in lib/pipeline/index.ts).
+   */
   assetVersionId: Uuid;
+  /**
+   * The version this note was originally pinned on. Set once at creation and
+   * never touched again, so a note carried forward across several rounds can
+   * still read "since v1" even though `assetVersionId` has long since moved
+   * on. Paired with `originVersionNumber` so the UI can show that without an
+   * extra lookup for a version that may no longer be loaded.
+   */
+  originVersionId: Uuid;
+  originVersionNumber: number;
   /** Scene the note was taken in, for traceability. Null if made elsewhere. */
   sceneId: Uuid | null;
   /** Anchor in the asset's local space, metres. */
@@ -413,6 +497,16 @@ export interface Annotation {
   status: AnnotationStatus;
   /** The version created in response to this note. */
   resolvedByVersionId: Uuid | null;
+  /**
+   * Set only when this note was carried forward to a newer version and its
+   * anchor could not be cleanly reconciled with that version's spec - either
+   * the part it named no longer resolves to a component (renamed, merged or
+   * removed), or the anchor point now falls outside the piece's bounding box.
+   * Null otherwise, including for notes that have never been carried
+   * forward. The pin itself, its position and its `open` status are left
+   * alone; this is only a heads-up that its context may be stale.
+   */
+  staleNote: string | null;
   createdAt: IsoDate;
 }
 

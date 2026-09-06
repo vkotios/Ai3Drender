@@ -1,6 +1,8 @@
 import { apiError, json, withScene } from '@/lib/api';
+import { blobUrlWithExpiry } from '@/lib/db';
 import { SceneConflictError } from '@/lib/db/store';
-import type { SceneDoc } from '@/lib/types';
+import { migrateSceneOnLoad } from '@/lib/scene/materialOverrides';
+import type { MaterialSpec, SceneDoc, Uuid } from '@/lib/types';
 
 type Params = { params: Promise<{ sceneId: string }> };
 
@@ -16,16 +18,24 @@ export async function GET(_request: Request, { params }: Params) {
     for (const id of versionIds) {
       const version = await store.getAssetVersion(id);
       if (!version) continue;
-      versions.push({
-        version,
-        meshUrl: version.meshPath ? await store.blobUrl(version.meshPath) : null,
-      });
+      const resolved = version.meshPath
+        ? await blobUrlWithExpiry(store, version.meshPath)
+        : { url: null, expiresAt: null };
+      versions.push({ version, meshUrl: resolved.url, meshUrlExpiresAt: resolved.expiresAt });
     }
+
+    // Rekey any material overrides still written under the pre-fix "material
+    // name" scheme (issue #7) before handing the doc back.
+    const specMaterialsByVersionId = new Map<Uuid, readonly MaterialSpec[]>(
+      versions.map((v) => [v.version.id, v.version.spec.materials]),
+    );
+    const migrated = await migrateSceneOnLoad(store, scene, specMaterialsByVersionId);
+
     // The studio needs every note on every staged piece, plus any renders
     // already produced for this stand.
     const assetIds = [...new Set(versions.map((v) => v.version.assetId))];
     return json({
-      scene,
+      scene: migrated,
       versions,
       annotations: await store.listAnnotations(assetIds),
       renders: await store.listSceneRenders(scene.id),

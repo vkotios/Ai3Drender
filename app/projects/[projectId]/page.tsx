@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
+import { DeleteProjectButton } from '@/components/DeleteProjectButton';
 import { ProjectWorkbench } from '@/components/ProjectWorkbench';
 import { requireProject } from '@/lib/db';
 import { requireSession } from '@/lib/auth';
@@ -20,10 +21,11 @@ export default async function ProjectPage({
   if (!project) notFound();
 
   const { store } = session;
-  const [images, assets, scenes] = await Promise.all([
+  const [images, assets, scenes, libraryEntries] = await Promise.all([
     store.listSourceImages(project.id),
     store.listAssets(project.id),
     store.listScenes(project.id),
+    store.listMaterialLibraryEntries(project.ownerId),
   ]);
 
   // Resolve thumbnails and current versions server-side so the workbench
@@ -33,21 +35,33 @@ export default async function ProjectPage({
   ) as Record<string, string>;
 
   const rows = await Promise.all(
-    assets.map(async (asset) => ({
-      asset,
-      currentVersion: asset.currentVersionId
+    assets.map(async (asset) => {
+      const currentVersion = asset.currentVersionId
         ? ((await store.getAssetVersion(asset.currentVersionId)) as AssetVersion | null)
-        : null,
-    })),
+        : null;
+      return {
+        asset,
+        currentVersion,
+        meshUrl: currentVersion?.meshPath ? await store.blobUrl(currentVersion.meshPath) : null,
+        previewUrl: currentVersion?.previewPath
+          ? await store.blobUrl(currentVersion.previewPath)
+          : null,
+      };
+    }),
   );
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
       <header className="mb-8">
-        <Link href="/" className="text-xs text-shell-400 transition hover:text-shell-100">
-          ← All projects
-        </Link>
-        <h1 className="mt-2 text-xl font-semibold tracking-tight">{project.name}</h1>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <Link href="/" className="text-xs text-shell-400 transition hover:text-shell-100">
+              ← All projects
+            </Link>
+            <h1 className="mt-2 text-xl font-semibold tracking-tight">{project.name}</h1>
+          </div>
+          <DeleteProjectButton projectId={project.id} name={project.name} />
+        </div>
         {project.client && <p className="text-sm text-shell-400">{project.client}</p>}
         {project.brief && (
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-shell-300">{project.brief}</p>
@@ -60,6 +74,7 @@ export default async function ProjectPage({
         initialAssets={rows}
         initialScenes={scenes}
         imageUrls={imageUrls}
+        initialLibraryEntries={libraryEntries}
       />
     </main>
   );

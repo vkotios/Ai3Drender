@@ -6,6 +6,7 @@ import type {
   Job,
   JobKind,
   JobStatus,
+  MaterialLibraryEntry,
   Project,
   Scene,
   SceneDoc,
@@ -19,6 +20,17 @@ export interface Blob {
   bytes: Uint8Array;
   contentType: string;
 }
+
+/**
+ * How long a freshly minted `blobUrl()` is good for in `SupabaseStore`. Local
+ * disk URLs never expire, so this only applies in Supabase mode.
+ *
+ * Shared here (rather than living only inside `SupabaseStore`) so anything
+ * that hands a URL to the browser and needs to know when to ask for a new one
+ * - see `blobUrlWithExpiry` in `lib/db/index.ts` - agrees with the value the
+ * signing call itself actually used.
+ */
+export const SIGNED_URL_TTL_SECONDS = 3600;
 
 export interface NewProject {
   ownerId: string;
@@ -62,6 +74,57 @@ export interface NewJob {
   input?: Record<string, unknown>;
   /** Defaults to 3. Set to 1 for work that must never be repeated. */
   maxAttempts?: number;
+}
+
+export type NewMaterialLibraryEntry = Omit<
+  MaterialLibraryEntry,
+  'id' | 'createdAt' | 'updatedAt'
+>;
+
+export type MaterialLibraryEntryPatch = Partial<
+  Pick<
+    MaterialLibraryEntry,
+    | 'name'
+    | 'code'
+    | 'kind'
+    | 'baseColorHex'
+    | 'roughness'
+    | 'metalness'
+    | 'sheen'
+    | 'clearcoat'
+    | 'finish'
+    | 'notes'
+    | 'swatchPath'
+    | 'archivedAt'
+  >
+>;
+
+/** One component, in one asset version, bound to a library entry. */
+export interface MaterialLibraryUsageComponent {
+  name: string;
+  role: string;
+}
+
+/**
+ * One asset version whose spec currently binds a material to a given library
+ * entry, and which components there use it. Returned by
+ * `listMaterialLibraryUsage` - a derived read over `asset_versions`, not a
+ * stored join, so a discontinued material can be traced without a separate
+ * table to keep in sync as specs change.
+ */
+export interface MaterialLibraryUsage {
+  projectId: Uuid;
+  projectName: string;
+  assetId: Uuid;
+  assetName: string;
+  assetVersionId: Uuid;
+  versionNumber: number;
+  /** True when this version is the asset's current (displayed) version. */
+  isCurrentVersion: boolean;
+  /** The materials[].id within this version's spec that is bound. */
+  materialId: string;
+  materialName: string;
+  components: MaterialLibraryUsageComponent[];
 }
 
 /**
@@ -166,6 +229,41 @@ export interface Store {
   putBlob(key: string, bytes: Uint8Array, contentType: string): Promise<string>;
   getBlob(key: string): Promise<Blob | null>;
   deleteBlob(key: string): Promise<void>;
-  /** A URL the browser can fetch. May be signed and time-limited. */
+  /**
+   * Remove every blob whose key starts with this prefix - e.g. a whole
+   * project's `<project_id>` subtree, or one scene's
+   * `<project_id>/renders/<scene_id>` folder. A prefix with nothing under it
+   * is not an error. Refuses an empty prefix, which would otherwise sweep
+   * every blob in storage.
+   */
+  deleteBlobPrefix(prefix: string): Promise<void>;
+  /**
+   * List every blob key in storage, optionally under a prefix. Only used by
+   * the storage reconciliation script (`scripts/reconcile-storage.ts`) to
+   * find blobs with no owning row - not on any request path.
+   */
+  listBlobKeys(prefix?: string): Promise<string[]>;
+  /**
+   * A URL the browser can fetch. May be signed and time-limited (see
+   * `SIGNED_URL_TTL_SECONDS`) - callers that hand this to a long-lived page
+   * should re-resolve it before it goes stale rather than trusting one call
+   * forever. `GET /api/blob-url` and `lib/studio/blobUrl.ts` do that for the
+   * studio viewport.
+   */
   blobUrl(key: string): Promise<string>;
+
+  /* Material library (account-scoped by ownerId, see MaterialLibraryEntry) */
+  createMaterialLibraryEntry(input: NewMaterialLibraryEntry): Promise<MaterialLibraryEntry>;
+  getMaterialLibraryEntry(id: Uuid): Promise<MaterialLibraryEntry | null>;
+  listMaterialLibraryEntries(
+    ownerId: string,
+    options?: { includeArchived?: boolean },
+  ): Promise<MaterialLibraryEntry[]>;
+  updateMaterialLibraryEntry(
+    id: Uuid,
+    patch: MaterialLibraryEntryPatch,
+  ): Promise<MaterialLibraryEntry>;
+  deleteMaterialLibraryEntry(id: Uuid): Promise<void>;
+  /** Every piece, across every project owned by `ownerId`, bound to this entry. */
+  listMaterialLibraryUsage(ownerId: string, libraryEntryId: Uuid): Promise<MaterialLibraryUsage[]>;
 }
