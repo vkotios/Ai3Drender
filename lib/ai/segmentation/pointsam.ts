@@ -85,6 +85,10 @@ export class PointSamProvider implements PartSegmentationProvider {
       score: typeof s.score === 'number' ? s.score : null,
     }));
 
-    return { segments, providerJobId: payload.job_id ?? null };
+    // Point-SAM never re-triangulates - it samples points from, and
+    // propagates labels back onto, the mesh exactly as given, and only ever
+    // returns the single segment a prompt point landed in - so there's no
+    // provider-reported "unassigned" concept and no modified mesh to report.
+    return { segments, unassignedFaceIndices: [], segmentedGlb: undefined, providerJobId: payload.job_id ?? null };
   }
 }

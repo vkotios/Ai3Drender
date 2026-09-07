@@ -46,6 +46,15 @@ export const env = {
    * reports `configured: false` and callers must not construct a request.
    */
   pointSamServiceUrl: clean(process.env.POINTSAM_SERVICE_URL),
+  /**
+   * P3-SAM (Tencent Hunyuan3D-Part) part-segmentation evaluation adapter, see
+   * lib/ai/segmentation/p3sam.ts - not wired into any production pipeline
+   * job. Defaults to Tencent's own public HuggingFace Space; override to
+   * point at a self-hosted copy of the same Gradio app.
+   */
+  p3samSpaceUrl: clean(process.env.P3SAM_SPACE_URL) ?? 'https://tencent-hunyuan3d-part.hf.space',
+  /** Optional; raises the public Space's shared "ZeroGPU" quota above the (very small) anonymous limit. */
+  huggingfaceToken: clean(process.env.HUGGINGFACE_TOKEN),
 
   appUrl: clean(process.env.NEXT_PUBLIC_APP_URL) ?? 'http://localhost:3000',
 
