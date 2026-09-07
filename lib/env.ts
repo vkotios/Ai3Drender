@@ -39,6 +39,14 @@ export const env = {
   falApiKey: clean(process.env.FAL_API_KEY),
   falMeshModel: clean(process.env.FAL_MESH_MODEL) ?? 'fal-ai/hunyuan3d-v21',
 
+  /**
+   * Base URL of a self-hosted Point-SAM inference service (services/pointsam
+   * in this repo) - see lib/ai/segmentation/pointsam.ts. Evaluation-only:
+   * nothing reads this outside that adapter today. Unset => PointSamProvider
+   * reports `configured: false` and callers must not construct a request.
+   */
+  pointSamServiceUrl: clean(process.env.POINTSAM_SERVICE_URL),
+
   appUrl: clean(process.env.NEXT_PUBLIC_APP_URL) ?? 'http://localhost:3000',
 
   /** Executable invoked for offline Blender/Cycles renders. */

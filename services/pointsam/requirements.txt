@@ -1,0 +1,28 @@
+# Point-SAM self-hosted inference service - see README.md before installing.
+#
+# This file covers the HTTP wrapper's OWN dependencies only. It deliberately
+# does NOT include `pc_sam` itself, nor its `third_party/torkit3d` and
+# `third_party/apex` submodules - those are not PyPI packages, come from
+# zyc00/Point-SAM directly, and (per that repo's README) need CUDA-enabled
+# compilation from source. See README.md, step 2, for that install.
+#
+# Versions are floors, not pins - align exactly with whatever CUDA/PyTorch
+# build the Point-SAM checkpoint you're loading was itself trained/exported
+# against (its README asks for torch>=2.1.0, torchvision>=0.16.0).
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+
+torch>=2.1.0
+torchvision>=0.16.0
+timm>=0.9.0
+
+hydra-core>=1.3.0
+omegaconf>=2.3.0
+safetensors>=0.4.0
+accelerate>=0.30.0
+
+trimesh>=4.0.0
+numpy>=1.24.0
+scipy>=1.10.0
