@@ -13,11 +13,13 @@ import {
   slugify,
   type ExportFormat,
 } from '@/lib/studio/export';
+import { useFullscreen } from '@/lib/studio/useFullscreen';
 import { useStudio, type LoadedVersion, type StudioMode } from '@/lib/studio/store';
 import type { Annotation, ClientApproval, Project, Scene } from '@/lib/types';
 
 import { AnnotationPanel } from './AnnotationPanel';
 import { CommandBar } from './CommandBar';
+import { FullscreenButton } from './FullscreenButton';
 import { Inspector } from './Inspector';
 import { RenderPanel, type StoredRender } from './RenderPanel';
 import { Outliner } from './Outliner';
@@ -75,6 +77,7 @@ export function StudioShell({
   const [converged, setConverged] = useState(false);
   const [renders, setRenders] = useState<StoredRender[]>(initialRenders);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const viewportFullscreen = useFullscreen<HTMLElement>();
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -409,7 +412,7 @@ export function StudioShell({
           {doc ? <Outliner available={available} /> : <PanelSkeleton rows={3} />}
         </aside>
 
-        <main className="relative min-w-0 flex-1 bg-shell-900">
+        <main ref={viewportFullscreen.ref} className="relative min-w-0 flex-1 bg-shell-900">
           {doc && (
             <StudioCanvas
               doc={doc}
@@ -421,6 +424,13 @@ export function StudioShell({
               onCanvasReady={onCanvasReady}
             />
           )}
+          <div className="absolute right-3 top-3">
+            <FullscreenButton
+              isFullscreen={viewportFullscreen.isFullscreen}
+              onToggle={viewportFullscreen.toggle}
+              supported={viewportFullscreen.supported}
+            />
+          </div>
           <p className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-shell-950/80 px-3 py-1 text-[11px] text-shell-400">
             {renderMode === 'pathtrace'
               ? `Path tracing — ${formatSamples(samples)} sample${samples === 1 ? '' : 's'}${

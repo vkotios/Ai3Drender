@@ -4,8 +4,11 @@ import dynamic from 'next/dynamic';
 import { useEffect, useState } from 'react';
 
 import { Badge, Button, Empty, Field, Panel, TextInput } from '@/components/ui';
+import { useFullscreen } from '@/lib/studio/useFullscreen';
 import { useStudio, type LoadedVersion } from '@/lib/studio/store';
 import type { Annotation, ClientApproval, Scene, SelectionKind, ShareRole } from '@/lib/types';
+
+import { FullscreenButton } from './FullscreenButton';
 
 // Same client-only constraint as the authenticated studio - WebGL and drei's
 // HDRI loading do not exist on the server.
@@ -110,6 +113,8 @@ export function ShareStudioShell({
   const selectionMode = useStudio((s) => s.selectionMode);
   const setSelectionMode = useStudio((s) => s.setSelectionMode);
 
+  const viewportFullscreen = useFullscreen<HTMLElement>();
+  const arFullscreen = useFullscreen<HTMLDivElement>();
   const [clientName, setClientName] = useState('');
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -242,7 +247,7 @@ export function ShareStudioShell({
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <main className="relative min-w-0 flex-1 bg-shell-900">
+        <main ref={viewportFullscreen.ref} className="relative min-w-0 flex-1 bg-shell-900">
           {doc && (
             <StudioCanvas
               doc={doc}
@@ -254,6 +259,13 @@ export function ShareStudioShell({
               onCanvasReady={() => {}}
             />
           )}
+          <div className="absolute right-3 top-3">
+            <FullscreenButton
+              isFullscreen={viewportFullscreen.isFullscreen}
+              onToggle={viewportFullscreen.toggle}
+              supported={viewportFullscreen.supported}
+            />
+          </div>
           <p className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-shell-950/80 px-3 py-1 text-[11px] text-shell-400">
             {canComment
               ? selectionMode === 'freehand'
@@ -476,14 +488,21 @@ export function ShareStudioShell({
       </div>
 
       {arVersion && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-shell-950">
+        <div ref={arFullscreen.ref} className="fixed inset-0 z-50 flex flex-col bg-shell-950">
           <header className="flex shrink-0 items-center justify-between gap-3 border-b border-shell-800 px-4 py-2.5">
             <h2 className="truncate text-sm font-medium text-shell-100">
               {arVersion.spec.displayName} · AR view
             </h2>
-            <Button size="sm" variant="ghost" onClick={() => setArVersionId(null)}>
-              Close
-            </Button>
+            <div className="flex gap-1.5">
+              <FullscreenButton
+                isFullscreen={arFullscreen.isFullscreen}
+                onToggle={arFullscreen.toggle}
+                supported={arFullscreen.supported}
+              />
+              <Button size="sm" variant="ghost" onClick={() => setArVersionId(null)}>
+                Close
+              </Button>
+            </div>
           </header>
           <div className="min-h-0 flex-1">
             <ArViewer
