@@ -81,22 +81,33 @@ async function main() {
   await mkdir(outDir, { recursive: true });
 
   const start = Date.now();
-  const result = await provider.segmentParts(glb, {
+  const result = await provider.segmentParts({
+    meshGlb: glb,
     postprocess,
     postprocessThreshold: thresholdArg ? Number(thresholdArg) : undefined,
     seed: seedArg ? Number(seedArg) : undefined,
   });
   const elapsedS = ((Date.now() - start) / 1000).toFixed(1);
 
+  // Every face is either in exactly one segment or unassigned - see this
+  // once locally rather than relying on the (P3-SAM-only) `totalFaceCount`
+  // field the shared port dropped once Point-SAM, which never reports one,
+  // started implementing the same interface.
+  const totalFaceCount =
+    result.segments.reduce((sum, s) => sum + s.faceIndices.length, 0) + result.unassignedFaceIndices.length;
+
   console.log(
     `[eval] done in ${elapsedS}s: ${result.segments.length} parts, ` +
-      `${result.unassignedFaceIndices.length}/${result.totalFaceCount} faces unassigned ` +
+      `${result.unassignedFaceIndices.length}/${totalFaceCount} faces unassigned ` +
       `(job ${result.providerJobId})`,
   );
 
+  if (!result.segmentedGlb) {
+    throw new Error('P3-SAM always returns a segmentedGlb; got none - the provider or API contract changed');
+  }
   await writeFile(path.join(outDir, 'segmented.glb'), result.segmentedGlb);
 
-  const faceIds = new Array<number>(result.totalFaceCount).fill(-1);
+  const faceIds = new Array<string | number>(totalFaceCount).fill(-1);
   for (const segment of result.segments) {
     for (const faceIndex of segment.faceIndices) faceIds[faceIndex] = segment.id;
   }
@@ -107,9 +118,9 @@ async function main() {
     provider: provider.name,
     providerJobId: result.providerJobId,
     elapsedSeconds: Number(elapsedS),
-    totalFaceCount: result.totalFaceCount,
+    totalFaceCount,
     unassignedFaceCount: result.unassignedFaceIndices.length,
-    segments: result.segments.map((s) => ({ id: s.id, faceCount: s.faceCount })),
+    segments: result.segments.map((s) => ({ id: s.id, faceCount: s.faceIndices.length })),
   };
   await writeFile(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
 

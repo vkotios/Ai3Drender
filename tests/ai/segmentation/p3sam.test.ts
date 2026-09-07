@@ -120,15 +120,14 @@ describe('P3SamProvider', () => {
     const { P3SamProvider } = await importWithEnv({ p3samSpaceUrl: SPACE, huggingfaceToken: null });
     const provider = new P3SamProvider();
 
-    const result = await provider.segmentParts(new Uint8Array([9, 9, 9]));
+    const result = await provider.segmentParts({ meshGlb: new Uint8Array([9, 9, 9]) });
 
     expect(result.providerJobId).toBe('evt-1');
-    expect(result.totalFaceCount).toBe(6);
     expect(result.unassignedFaceIndices).toEqual([3]);
     expect(result.segments).toEqual([
-      { id: 0, faceIndices: [0, 1], faceCount: 2 },
-      { id: 1, faceIndices: [2, 4], faceCount: 2 },
-      { id: 2, faceIndices: [5], faceCount: 1 },
+      { id: '0', faceIndices: [0, 1], score: null },
+      { id: '1', faceIndices: [2, 4], score: null },
+      { id: '2', faceIndices: [5], score: null },
     ]);
     expect(result.segmentedGlb).toEqual(meshBytes);
 
@@ -158,7 +157,7 @@ describe('P3SamProvider', () => {
     });
 
     const { P3SamProvider } = await importWithEnv({ p3samSpaceUrl: SPACE, huggingfaceToken: 'hf_secret123' });
-    await new P3SamProvider().segmentParts(new Uint8Array([1]));
+    await new P3SamProvider().segmentParts({ meshGlb: new Uint8Array([1]) });
 
     for (const [, init] of fetchMock.mock.calls) {
       const headers = (init as RequestInit | undefined)?.headers as Record<string, string> | undefined;
@@ -180,7 +179,7 @@ describe('P3SamProvider', () => {
     });
 
     const { P3SamProvider } = await importWithEnv({ p3samSpaceUrl: SPACE, huggingfaceToken: null });
-    await expect(new P3SamProvider().segmentParts(new Uint8Array([1]))).rejects.toThrow(
+    await expect(new P3SamProvider().segmentParts({ meshGlb: new Uint8Array([1]) })).rejects.toThrow(
       /ZeroGPU quota exceeded/i,
     );
   });
@@ -192,7 +191,7 @@ describe('P3SamProvider', () => {
       p3samSpaceUrl: SPACE,
       huggingfaceToken: null,
     });
-    await expect(new P3SamProvider().segmentParts(new Uint8Array([1]))).rejects.toBeInstanceOf(
+    await expect(new P3SamProvider().segmentParts({ meshGlb: new Uint8Array([1]) })).rejects.toBeInstanceOf(
       PartSegmentationProviderError,
     );
   });
@@ -217,7 +216,7 @@ describe('P3SamProvider', () => {
     });
 
     const { P3SamProvider } = await importWithEnv({ p3samSpaceUrl: SPACE, huggingfaceToken: null });
-    await expect(new P3SamProvider().segmentParts(new Uint8Array([1]))).rejects.toThrow(/job failed/i);
+    await expect(new P3SamProvider().segmentParts({ meshGlb: new Uint8Array([1]) })).rejects.toThrow(/job failed/i);
   });
 
   it('falls back to constructing a gradio_api/file= URL when a FileData result omits `url`', async () => {
@@ -243,7 +242,7 @@ describe('P3SamProvider', () => {
     });
 
     const { P3SamProvider } = await importWithEnv({ p3samSpaceUrl: SPACE, huggingfaceToken: null });
-    const result = await new P3SamProvider().segmentParts(new Uint8Array([1]));
-    expect(result.segments).toEqual([{ id: 0, faceIndices: [0], faceCount: 1 }]);
+    const result = await new P3SamProvider().segmentParts({ meshGlb: new Uint8Array([1]) });
+    expect(result.segments).toEqual([{ id: '0', faceIndices: [0], score: null }]);
   });
 });
