@@ -9,3 +9,9 @@ next-env.d.ts
 .DS_Store
 /storage-local/
 .claude/worktrees/
+
+# services/pointsam (Python) - not part of the Next.js build/deploy.
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/

@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "worker": "tsx scripts/worker.ts",
-    "reconcile-storage": "tsx scripts/reconcile-storage.ts"
+    "reconcile-storage": "tsx scripts/reconcile-storage.ts",
+    "eval:pointsam": "tsx scripts/eval-pointsam.ts",
+    "eval:p3sam": "tsx scripts/eval-p3sam-segmentation.ts"
   },
   "dependencies": {
     "@gltf-transform/core": "^4.5.0",
