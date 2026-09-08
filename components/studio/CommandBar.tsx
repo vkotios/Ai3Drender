@@ -3,12 +3,11 @@
 import { useState } from 'react';
 
 import { Button, TextInput } from '@/components/ui';
+import { applySceneMutations, type SceneMutation } from '@/lib/scene/command';
 import { useStudio } from '@/lib/studio/store';
-import type { Scene } from '@/lib/types';
 
-interface CommandResponse {
-  scene: Scene;
-  summary: string;
+interface InterpretResponse {
+  mutations: SceneMutation[];
   unresolved: string[];
 }
 
@@ -18,21 +17,32 @@ type Feedback = { tone: 'ok' | 'warn' | 'error'; text: string };
  * Natural-language studio command box (issue #60): "move the sofa 30cm left
  * and warm up the lighting" as a typed command instead of manual gizmo work.
  *
- * POSTs to `POST /api/scenes/:sceneId/command`, which interprets the command
- * into a small, closed set of scene mutations (see lib/scene/command.ts and
- * its PR description for the full list and why it stops there), applies
- * them, and saves through the ordinary scene-save path - so a successful
- * response IS the new saved scene, exactly like a manual Save, and
- * `markSaved` is all the local state update this needs.
+ * Issue #89 split this into two steps rather than one interpret-apply-save
+ * round trip: `POST .../command/interpret` only turns the free text into a
+ * validated `SceneMutation[]` (a Gemini call, or the offline parser - see
+ * lib/scene/command.ts for why the mutation set stays closed). Applying them
+ * happens right here, via the same pure `applySceneMutations` the old combined
+ * route used to call server-side, straight onto the in-memory `doc` - so the
+ * result lands in the viewport instantly, before any save round trip, exactly
+ * like a manual drag would. `setDoc` marks the scene dirty the same way any
+ * other studio edit does, so committing is just the ordinary Save button
+ * (with its usual conflict handling), and discarding is the same "reload the
+ * stand" every other unsaved edit in the studio already relies on - see the
+ * Inspector's version-compare panel for that same convention.
  *
- * Deliberately blocked while there are unsaved manual edits: the server
- * computes mutations against its own stored `doc`, not whatever is only
- * staged locally, so running a command over unsaved edits would silently
- * discard them the moment the response overwrites local state.
+ * Issue #90: the node the command's last mutation touched is selected
+ * afterward, so the Inspector's numeric fields pick up the result immediately
+ * for hand-tuning, the same fields a manual gizmo drag would leave populated.
+ *
+ * Still blocked while there are unsaved manual edits: the interpreter reads
+ * the server's own persisted `doc`, not whatever is only staged locally, so
+ * running a command over unsaved edits could resolve node names or "current"
+ * values against a doc your local edits have already diverged from.
  */
 export function CommandBar({ sceneId }: { sceneId: string }) {
   const dirty = useStudio((s) => s.dirty);
-  const markSaved = useStudio((s) => s.markSaved);
+  const setDoc = useStudio((s) => s.setDoc);
+  const select = useStudio((s) => s.select);
   const [command, setCommand] = useState('');
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -40,38 +50,45 @@ export function CommandBar({ sceneId }: { sceneId: string }) {
   const run = async () => {
     const trimmed = command.trim();
     if (!trimmed || busy) return;
-    const scene = useStudio.getState().scene;
-    if (!scene) return;
+    const state = useStudio.getState();
+    if (!state.doc) return;
 
     setBusy(true);
     setFeedback(null);
     try {
-      const response = await fetch(`/api/scenes/${sceneId}/command`, {
+      const response = await fetch(`/api/scenes/${sceneId}/command/interpret`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: trimmed, expectedVersion: scene.version }),
+        body: JSON.stringify({ command: trimmed }),
       });
       const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setFeedback({ tone: 'error', text: body.error ?? 'That command could not be interpreted.' });
+        return;
+      }
 
-      if (response.status === 409) {
+      const { mutations, unresolved } = body as InterpretResponse;
+      const applied = applySceneMutations(state.doc, mutations, state.versions);
+      const notes = [...unresolved, ...applied.problems];
+      setCommand('');
+
+      if (applied.changes.length === 0) {
         setFeedback({
-          tone: 'error',
-          text: 'Someone else saved changes to this scene since you loaded it - reload the studio, then try the command again.',
+          tone: notes.length > 0 ? 'warn' : 'ok',
+          text:
+            notes.length > 0
+              ? `Nothing in that command could be applied. ${notes.join(' ')}`
+              : 'Nothing in that command could be applied.',
         });
         return;
       }
-      if (!response.ok) {
-        setFeedback({ tone: 'error', text: body.error ?? 'That command could not be run.' });
-        return;
-      }
 
-      const result = body as CommandResponse;
-      markSaved(result.scene);
-      setCommand('');
+      setDoc(applied.doc);
+      if (applied.lastTouchedNodeId) select(applied.lastTouchedNodeId);
       setFeedback(
-        result.unresolved.length > 0
-          ? { tone: 'warn', text: `${result.summary} Could not apply: ${result.unresolved.join(' ')}` }
-          : { tone: 'ok', text: result.summary },
+        notes.length > 0
+          ? { tone: 'warn', text: `${applied.changes.join(' ')} Could not apply: ${notes.join(' ')}` }
+          : { tone: 'ok', text: `${applied.changes.join(' ')} Not saved yet - review, then Save.` },
       );
     } catch (cause) {
       setFeedback({ tone: 'error', text: cause instanceof Error ? cause.message : 'That command could not be run.' });
@@ -91,7 +108,7 @@ export function CommandBar({ sceneId }: { sceneId: string }) {
           }}
           placeholder={
             dirty
-              ? 'Save or discard your changes before running a command'
+              ? 'Save or reload to discard your changes before running a command'
               : 'Tell the studio what to change - e.g. "move the sofa 30cm left and warm up the lighting"'
           }
           disabled={dirty || busy}

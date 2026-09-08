@@ -3,12 +3,13 @@ import type {
   CameraSettings,
   PropKind,
   SceneDoc,
+  SceneLight,
   SceneNode,
   Transform,
   Vec3,
 } from '@/lib/types';
 
-import { DEFAULT_PRESET_ID, getPreset } from './presets';
+import { DEFAULT_PRESET_ID, getPreset, LIGHT_DEFAULTS } from './presets';
 
 export const IDENTITY_TRANSFORM: Transform = {
   position: { x: 0, y: 0, z: 0 },
@@ -68,6 +69,22 @@ export function createPropNode(propKind: PropKind, name: string): SceneNode {
     assetVersionId: null,
     propKind,
     light: null,
+    materialOverrides: {},
+  };
+}
+
+/** A new light node (issue #92), seeded from `LIGHT_DEFAULTS` for its type. */
+export function createLightNode(type: SceneLight['type'], name: string): SceneNode {
+  const defaults = LIGHT_DEFAULTS[type];
+  return {
+    id: newId(),
+    name,
+    kind: 'light',
+    transform: { ...IDENTITY_TRANSFORM, position: { ...defaults.position } },
+    visible: true,
+    assetVersionId: null,
+    propKind: null,
+    light: { type, colorHex: defaults.colorHex, intensity: defaults.intensity, distance: defaults.distance },
     materialOverrides: {},
   };
 }

@@ -1,4 +1,4 @@
-import type { EnvironmentSettings, PropKind } from '@/lib/types';
+import type { EnvironmentSettings, PropKind, SceneLight, Vec3 } from '@/lib/types';
 
 /**
  * Exhibition booth presets.
@@ -138,4 +138,19 @@ export const PROP_DEFINITIONS: Record<
   planter: { label: 'Planter', size: [0.5, 0.6, 0.5], colorHex: '#6E6B64', roughness: 0.7 },
   side_table: { label: 'Side table', size: [0.5, 0.5, 0.5], colorHex: '#4A3E33', roughness: 0.5 },
   floor_lamp: { label: 'Floor lamp', size: [0.35, 1.6, 0.35], colorHex: '#2A2A2D', roughness: 0.4 },
+};
+
+/**
+ * Starting point for a new light node (issue #92) - a plain `pointLight` (see
+ * `Lighting.tsx`), positioned and biased so it reads as its named role the
+ * moment it is added rather than needing every field set by hand first.
+ */
+export const LIGHT_DEFAULTS: Record<
+  SceneLight['type'],
+  { label: string; position: Vec3; colorHex: string; intensity: number; distance: number }
+> = {
+  key: { label: 'Key light', position: { x: 1.6, y: 2.4, z: 1.6 }, colorHex: '#FFF4E0', intensity: 1.2, distance: 8 },
+  fill: { label: 'Fill light', position: { x: -1.8, y: 1.6, z: 1 }, colorHex: '#EAF1FF', intensity: 0.5, distance: 8 },
+  rim: { label: 'Rim light', position: { x: 0, y: 2, z: -1.8 }, colorHex: '#FFFFFF', intensity: 0.8, distance: 6 },
+  accent: { label: 'Accent light', position: { x: 0, y: 0.6, z: 0.8 }, colorHex: '#FFD9A0', intensity: 0.6, distance: 4 },
 };

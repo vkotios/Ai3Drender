@@ -791,6 +791,9 @@ Supported mutation kinds:
 - set_visibility: show or hide a piece.
 - add_prop: add one new simple staging prop (plinth, rug, partition, planter, side table or
   floor lamp).
+- add_light: add one new light (key, fill, rim or accent).
+- delete_node: remove a staged piece, prop or light from the stand entirely.
+- duplicate_node: add a copy of a staged piece, prop or light next to the original.
 
 Coordinate convention: +X is to the right and -X is to the left, as seen from the aisle camera
 facing the booth. +Z is toward the aisle/camera (the front, nearer the viewer) and -Z is toward

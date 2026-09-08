@@ -131,7 +131,7 @@ describe('resolveMaterialTarget', () => {
 describe('normalizeRawMutation', () => {
   it('rejects an unsupported kind', () => {
     const doc = docWith([]);
-    const result = normalizeRawMutation({ kind: 'delete_node' } as RawSceneMutation, doc);
+    const result = normalizeRawMutation({ kind: 'launch_node' } as RawSceneMutation, doc);
     expect(result).toHaveProperty('problem');
   });
 
@@ -208,6 +208,34 @@ describe('normalizeRawMutation', () => {
       doc,
     );
     expect(result).toEqual({ kind: 'set_light_property', nodeName: 'Key Light', colorHex: null, intensity: 2, distance: null });
+  });
+
+  it('rejects an add_light with an unsupported light type', () => {
+    const result = normalizeRawMutation({ kind: 'add_light', lightType: 'spot' }, docWith([]));
+    expect(result).toHaveProperty('problem');
+  });
+
+  it('accepts a valid add_light and defaults name to null', () => {
+    const result = normalizeRawMutation({ kind: 'add_light', lightType: 'fill' }, docWith([]));
+    expect(result).toEqual({ kind: 'add_light', lightType: 'fill', name: null });
+  });
+
+  it('accepts delete_node and duplicate_node targeting an existing node', () => {
+    const doc = docWith([createAssetNode(makeVersion(), 'Sofa')]);
+    expect(normalizeRawMutation({ kind: 'delete_node', nodeName: 'sofa' }, doc)).toEqual({
+      kind: 'delete_node',
+      nodeName: 'Sofa',
+    });
+    expect(normalizeRawMutation({ kind: 'duplicate_node', nodeName: 'sofa' }, doc)).toEqual({
+      kind: 'duplicate_node',
+      nodeName: 'Sofa',
+    });
+  });
+
+  it('rejects delete_node/duplicate_node naming no piece on the stage', () => {
+    const doc = docWith([]);
+    expect(normalizeRawMutation({ kind: 'delete_node', nodeName: 'Ghost' }, doc)).toHaveProperty('problem');
+    expect(normalizeRawMutation({ kind: 'duplicate_node', nodeName: 'Ghost' }, doc)).toHaveProperty('problem');
   });
 });
 
@@ -346,6 +374,35 @@ describe('applySceneMutations', () => {
     const result = applySceneMutations(doc, [{ kind: 'move_node', nodeName: 'Ghost', deltaMeters: { x: 1, y: 0, z: 0 } }], {});
     expect(result.changes).toEqual([]);
     expect(result.problems).toEqual(['"Ghost" is no longer on the stage - skipped.']);
+  });
+
+  it('adds a light, seeded from that light type\'s defaults', () => {
+    const doc = docWith([]);
+    const result = applySceneMutations(doc, [{ kind: 'add_light', lightType: 'fill', name: null }], {});
+    expect(result.doc.nodes).toHaveLength(1);
+    expect(result.doc.nodes[0]).toMatchObject({ kind: 'light', name: 'Fill light' });
+    expect(result.doc.nodes[0].light).toMatchObject({ type: 'fill' });
+    expect(result.changes).toEqual(['Added a Fill light.']);
+  });
+
+  it('deletes a node', () => {
+    const doc = docWith([createAssetNode(makeVersion(), 'Sofa'), createPropNode('rug', 'Rug')]);
+    const result = applySceneMutations(doc, [{ kind: 'delete_node', nodeName: 'Sofa' }], {});
+    expect(result.doc.nodes).toHaveLength(1);
+    expect(result.doc.nodes[0].name).toBe('Rug');
+    expect(result.changes).toEqual(['Deleted Sofa.']);
+  });
+
+  it('duplicates a node, offsetting the copy so it does not land inside the original', () => {
+    const node = createAssetNode(makeVersion(), 'Sofa', { position: { x: 1, y: 0, z: 2 } });
+    const doc = docWith([node]);
+    const result = applySceneMutations(doc, [{ kind: 'duplicate_node', nodeName: 'Sofa' }], {});
+    expect(result.doc.nodes).toHaveLength(2);
+    const copy = result.doc.nodes[1];
+    expect(copy.id).not.toBe(node.id);
+    expect(copy.name).toBe('Sofa copy');
+    expect(copy.transform.position).toEqual({ x: 1.3, y: 0, z: 2.3 });
+    expect(result.changes).toEqual(['Duplicated Sofa.']);
   });
 });
 
