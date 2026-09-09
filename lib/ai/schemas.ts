@@ -248,6 +248,9 @@ export const SCENE_MUTATION_SCHEMA = {
         'set_light_property',
         'set_visibility',
         'add_prop',
+        'add_light',
+        'delete_node',
+        'duplicate_node',
       ],
     },
     nodeName: {
@@ -255,8 +258,9 @@ export const SCENE_MUTATION_SCHEMA = {
       nullable: true,
       description:
         'The exact name of the staged node this mutation targets, copied verbatim from the ' +
-        '"Staged nodes" list. Null for add_prop (which creates a new node instead of targeting ' +
-        'one), or when no listed node plausibly matches - never invent a name.',
+        '"Staged nodes" list. Required for delete_node and duplicate_node. Null for add_prop and ' +
+        'add_light (which create a new node instead of targeting one), or when no listed node ' +
+        'plausibly matches - never invent a name.',
     },
     deltaMeters: {
       type: 'OBJECT',
@@ -342,7 +346,16 @@ export const SCENE_MUTATION_SCHEMA = {
     name: {
       type: 'STRING',
       nullable: true,
-      description: "add_prop only: display name for the new prop. Null to use the prop kind's default label.",
+      description:
+        "add_prop/add_light only: display name for the new node. Null to use the prop kind's " +
+        'or light type\'s default label.',
+    },
+    lightType: {
+      type: 'STRING',
+      nullable: true,
+      format: 'enum',
+      enum: ['key', 'fill', 'rim', 'accent'],
+      description: 'add_light only: which kind of light to add.',
     },
   },
   required: ['kind'],

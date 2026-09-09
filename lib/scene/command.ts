@@ -21,8 +21,8 @@
  */
 import type { VersionLookup } from './collisions';
 import { localFootprint } from './collisions';
-import { createPropNode, nextPlacement } from './defaults';
-import { PROP_DEFINITIONS } from './presets';
+import { createLightNode, createPropNode, nextPlacement } from './defaults';
+import { LIGHT_DEFAULTS, PROP_DEFINITIONS } from './presets';
 import type { PropKind, SceneDoc, SceneLight, SceneNode, Vec3 } from '@/lib/types';
 
 /** The closed set of edits a command can produce. Never extend this ad hoc from a prompt - add a kind here first. */
@@ -34,6 +34,9 @@ export const SCENE_MUTATION_KINDS = [
   'set_light_property',
   'set_visibility',
   'add_prop',
+  'add_light',
+  'delete_node',
+  'duplicate_node',
 ] as const;
 export type SceneMutationKind = (typeof SCENE_MUTATION_KINDS)[number];
 
@@ -64,6 +67,8 @@ export interface RawSceneMutation {
   visible?: boolean | null;
   propKind?: string | null;
   name?: string | null;
+  /** add_light only. */
+  lightType?: string | null;
 }
 
 /** A mutation that has been validated and resolved against a real `SceneDoc` - safe for `applySceneMutations` to apply blindly. */
@@ -88,7 +93,10 @@ export type SceneMutation =
       distance: number | null;
     }
   | { kind: 'set_visibility'; nodeName: string; visible: boolean }
-  | { kind: 'add_prop'; propKind: PropKind; name: string | null };
+  | { kind: 'add_prop'; propKind: PropKind; name: string | null }
+  | { kind: 'add_light'; lightType: SceneLight['type']; name: string | null }
+  | { kind: 'delete_node'; nodeName: string }
+  | { kind: 'duplicate_node'; nodeName: string };
 
 export interface SceneCommandResult {
   mutations: SceneMutation[];
@@ -116,6 +124,7 @@ function clamp(value: unknown, lo: number, hi: number, fallback: number): number
 }
 
 const PROP_KINDS = Object.keys(PROP_DEFINITIONS) as PropKind[];
+const LIGHT_TYPES = Object.keys(LIGHT_DEFAULTS) as SceneLight['type'][];
 
 /** Case-insensitive exact match against a node's display name. Never guesses at a close-but-not-equal name. */
 export function resolveNodeByName(nodeName: string | null | undefined, doc: SceneDoc): SceneNode | null {
@@ -197,6 +206,14 @@ export function normalizeRawMutation(
     return { kind, propKind, name: raw.name?.trim() || null };
   }
 
+  if (kind === 'add_light') {
+    const lightType = LIGHT_TYPES.find((t) => t === raw.lightType);
+    if (!lightType) {
+      return { problem: `"${raw.lightType ?? 'that light'}" is not a supported light type - skipped.` };
+    }
+    return { kind, lightType, name: raw.name?.trim() || null };
+  }
+
   const node = resolveNodeByName(raw.nodeName, doc);
   if (!node) {
     return {
@@ -265,6 +282,12 @@ export function normalizeRawMutation(
       return { kind, nodeName: node.name, visible: raw.visible };
     }
 
+    case 'delete_node':
+      return { kind, nodeName: node.name };
+
+    case 'duplicate_node':
+      return { kind, nodeName: node.name };
+
     default:
       return { problem: `"${raw.kind}" is not a supported kind of edit - skipped.` };
   }
@@ -276,6 +299,14 @@ export interface ApplyMutationsResult {
   changes: string[];
   /** One line per mutation that resolved but could not actually be applied (stale reference, nothing left to change). */
   problems: string[];
+  /**
+   * The node the last successfully applied mutation touched - the new node
+   * for add_prop/add_light, the copy for duplicate_node, null after a
+   * delete_node or when nothing applied. Issue #90: the studio selects this
+   * node after a command lands, so the Inspector's own numeric fields pick up
+   * right where the command left off.
+   */
+  lastTouchedNodeId: string | null;
 }
 
 const RAD_PER_DEG = Math.PI / 180;
@@ -326,6 +357,7 @@ export function applySceneMutations(
   let nodes = doc.nodes;
   const changes: string[] = [];
   const problems: string[] = [];
+  let lastTouchedNodeId: string | null = null;
 
   for (const mutation of mutations) {
     if (mutation.kind === 'add_prop') {
@@ -340,6 +372,16 @@ export function applySceneMutations(
       node.transform = { ...node.transform, position: placement };
       nodes = [...nodes, node];
       changes.push(`Added a ${name}.`);
+      lastTouchedNodeId = node.id;
+      continue;
+    }
+
+    if (mutation.kind === 'add_light') {
+      const name = mutation.name ?? LIGHT_DEFAULTS[mutation.lightType].label;
+      const node = createLightNode(mutation.lightType, name);
+      nodes = [...nodes, node];
+      changes.push(`Added a ${name}.`);
+      lastTouchedNodeId = node.id;
       continue;
     }
 
@@ -359,6 +401,7 @@ export function applySceneMutations(
         };
         nodes = nodes.map((n) => (n.id === node.id ? { ...n, transform: { ...n.transform, position } } : n));
         changes.push(`Moved ${node.name} ${formatMetreDelta(mutation.deltaMeters)}.`);
+        lastTouchedNodeId = node.id;
         break;
       }
 
@@ -370,6 +413,7 @@ export function applySceneMutations(
         };
         nodes = nodes.map((n) => (n.id === node.id ? { ...n, transform: { ...n.transform, rotation } } : n));
         changes.push(`Rotated ${node.name} ${formatDegreeDelta(mutation.deltaDegrees)}.`);
+        lastTouchedNodeId = node.id;
         break;
       }
 
@@ -382,6 +426,7 @@ export function applySceneMutations(
         };
         nodes = nodes.map((n) => (n.id === node.id ? { ...n, transform: { ...n.transform, scale } } : n));
         changes.push(`Scaled ${node.name} by ${factor.toFixed(2)}x.`);
+        lastTouchedNodeId = node.id;
         break;
       }
 
@@ -404,6 +449,7 @@ export function applySceneMutations(
             : n,
         );
         changes.push(`Set ${node.name}'s material to ${describePatch(patch)}.`);
+        lastTouchedNodeId = node.id;
         break;
       }
 
@@ -419,18 +465,51 @@ export function applySceneMutations(
         const light: SceneLight = { ...node.light, ...patch };
         nodes = nodes.map((n) => (n.id === node.id ? { ...n, light } : n));
         changes.push(`Set ${node.name} to ${describePatch(patch)}.`);
+        lastTouchedNodeId = node.id;
         break;
       }
 
       case 'set_visibility': {
         nodes = nodes.map((n) => (n.id === node.id ? { ...n, visible: mutation.visible } : n));
         changes.push(`${mutation.visible ? 'Showed' : 'Hid'} ${node.name}.`);
+        lastTouchedNodeId = node.id;
+        break;
+      }
+
+      case 'delete_node': {
+        nodes = nodes.filter((n) => n.id !== node.id);
+        changes.push(`Deleted ${node.name}.`);
+        // Nothing left to select - clear rather than point at a node that no
+        // longer exists.
+        lastTouchedNodeId = null;
+        break;
+      }
+
+      case 'duplicate_node': {
+        const copy: SceneNode = {
+          ...structuredClone(node),
+          id: globalThis.crypto.randomUUID(),
+          name: `${node.name} copy`,
+          transform: {
+            ...node.transform,
+            position: {
+              x: node.transform.position.x + 0.3,
+              y: node.transform.position.y,
+              z: node.transform.position.z + 0.3,
+            },
+          },
+        };
+        nodes = [...nodes, copy];
+        changes.push(`Duplicated ${node.name}.`);
+        // The copy, not the original - it's the one the operator is more
+        // likely to want to place by hand next.
+        lastTouchedNodeId = copy.id;
         break;
       }
     }
   }
 
-  return { doc: { ...doc, nodes }, changes, problems };
+  return { doc: { ...doc, nodes }, changes, problems, lastTouchedNodeId };
 }
 
 /**

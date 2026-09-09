@@ -594,6 +594,32 @@ function offlineAddProp(clause: string): RawSceneMutation[] | null {
   return [{ kind: 'add_prop', propKind: match.propKind, name: null }];
 }
 
+const LIGHT_TYPE_KEYWORDS: Array<{ pattern: RegExp; lightType: string }> = [
+  { pattern: /\bkey\s*light\b/i, lightType: 'key' },
+  { pattern: /\bfill\s*light\b/i, lightType: 'fill' },
+  { pattern: /\brim\s*light\b/i, lightType: 'rim' },
+  { pattern: /\baccent\s*light\b/i, lightType: 'accent' },
+];
+
+/** Defaults to a key light when "add a light" names no particular kind. */
+function offlineAddLight(clause: string): RawSceneMutation[] | null {
+  if (!/\badd\b/i.test(clause) || !/\blights?\b/i.test(clause)) return null;
+  const match = LIGHT_TYPE_KEYWORDS.find((p) => p.pattern.test(clause));
+  return [{ kind: 'add_light', lightType: match?.lightType ?? 'key', name: null }];
+}
+
+function offlineDelete(clause: string, doc: SceneDoc): RawSceneMutation[] | null {
+  if (!/\b(delete|remove)\b/i.test(clause)) return null;
+  const node = resolveNodeOfflineWithFallback(clause, doc.nodes);
+  return [{ kind: 'delete_node', nodeName: node?.name ?? null }];
+}
+
+function offlineDuplicate(clause: string, doc: SceneDoc): RawSceneMutation[] | null {
+  if (!/\b(duplicate|copy|clone)\b/i.test(clause)) return null;
+  const node = resolveNodeOfflineWithFallback(clause, doc.nodes);
+  return [{ kind: 'duplicate_node', nodeName: node?.name ?? null }];
+}
+
 function offlineMove(clause: string, doc: SceneDoc): RawSceneMutation[] | null {
   if (!/\b(move|shift|nudge)\b/i.test(clause)) return null;
   const amountMatch = clause.match(METRE_PATTERN);
@@ -750,10 +776,13 @@ const OFFLINE_COMMAND_PARSERS: Array<
   (clause: string, doc: SceneDoc, versions: VersionLookup) => RawSceneMutation[] | null
 > = [
   (clause) => offlineAddProp(clause),
+  (clause) => offlineAddLight(clause),
   (clause, doc) => offlineMove(clause, doc),
   (clause, doc) => offlineRotate(clause, doc),
   (clause, doc) => offlineScale(clause, doc),
   (clause, doc) => offlineVisibility(clause, doc),
+  (clause, doc) => offlineDelete(clause, doc),
+  (clause, doc) => offlineDuplicate(clause, doc),
   (clause, doc) => offlineLight(clause, doc),
   (clause, doc, versions) => offlineMaterial(clause, doc, versions),
 ];

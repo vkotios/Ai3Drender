@@ -1,10 +1,10 @@
 'use client';
 
 import { Badge, Button, Empty, Panel } from '@/components/ui';
-import { autoArrange, createAssetNode, createPropNode, nextPlacement } from '@/lib/scene/defaults';
-import { PROP_DEFINITIONS, getPreset } from '@/lib/scene/presets';
+import { autoArrange, createAssetNode, createLightNode, createPropNode, nextPlacement } from '@/lib/scene/defaults';
+import { LIGHT_DEFAULTS, PROP_DEFINITIONS, getPreset } from '@/lib/scene/presets';
 import { useStudio, type LoadedVersion } from '@/lib/studio/store';
-import type { PropKind } from '@/lib/types';
+import type { PropKind, SceneLight } from '@/lib/types';
 
 /** Left-hand panel: what is on the stand, and how to put more there. */
 export function Outliner({ available }: { available: LoadedVersion[] }) {
@@ -150,6 +150,25 @@ export function Outliner({ available }: { available: LoadedVersion[] }) {
         </div>
         <p className="mt-2.5 text-[11px] leading-snug text-shell-400">
           Highlighted props suit the current stand treatment.
+        </p>
+      </Panel>
+
+      <Panel title="Lights">
+        <div className="flex flex-wrap gap-1.5">
+          {(Object.keys(LIGHT_DEFAULTS) as SceneLight['type'][]).map((type) => (
+            <Button
+              key={type}
+              size="sm"
+              variant="ghost"
+              onClick={() => addNode(createLightNode(type, LIGHT_DEFAULTS[type].label))}
+            >
+              {LIGHT_DEFAULTS[type].label}
+            </Button>
+          ))}
+        </div>
+        <p className="mt-2.5 text-[11px] leading-snug text-shell-400">
+          Adds a point light the command bar&rsquo;s lighting instructions (e.g. &ldquo;warm up the
+          lighting&rdquo;) can then target.
         </p>
       </Panel>
     </div>

@@ -206,6 +206,26 @@ describe('offlineInterpretSceneCommand', () => {
     expect(unresolved).toEqual(['juggle the chair enthusiastically']);
   });
 
+  it('adds a light, defaulting to key when no type is named and picking the named type otherwise', () => {
+    const doc = docWith([]);
+    expect(offlineInterpretSceneCommand(doc, {}, 'add a light').mutations).toEqual([
+      { kind: 'add_light', lightType: 'key', name: null },
+    ]);
+    expect(offlineInterpretSceneCommand(doc, {}, 'add a fill light').mutations).toEqual([
+      { kind: 'add_light', lightType: 'fill', name: null },
+    ]);
+  });
+
+  it('deletes and duplicates a named node', () => {
+    const doc = docWith([createAssetNode(makeVersion(), 'Chair')]);
+    expect(offlineInterpretSceneCommand(doc, {}, 'delete the chair').mutations).toEqual([
+      { kind: 'delete_node', nodeName: 'Chair' },
+    ]);
+    expect(offlineInterpretSceneCommand(doc, {}, 'duplicate the chair').mutations).toEqual([
+      { kind: 'duplicate_node', nodeName: 'Chair' },
+    ]);
+  });
+
   it('splits a multi-part command on "and"/commas and resolves each clause independently', () => {
     const doc = docWith([createAssetNode(makeVersion(), 'Chair'), createAssetNode(makeVersion({ id: 'v2' }), 'Table')]);
     const { mutations, unresolved } = offlineInterpretSceneCommand(

@@ -483,6 +483,13 @@ function AssetCard({
   const [open, setOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // The parent version the *next* Refine submit targets - null means "whatever
+  // is current", set only by "Try again" (issue #91) so a retry lands on the
+  // original parent even after it produced a newer child version.
+  const [refineRetryVersionId, setRefineRetryVersionId] = useState<string | null>(null);
+  // What the most recently submitted Refine actually ran against, so "Try
+  // again" has something to resubmit once that run has finished.
+  const [lastRefine, setLastRefine] = useState<{ versionId: string; instruction: string; rebuildMesh: boolean } | null>(null);
 
   const [rebakeOpen, setRebakeOpen] = useState(false);
   const [rebakeTarget, setRebakeTarget] = useState('');
@@ -491,22 +498,46 @@ function AssetCard({
   const [rebakeInstruction, setRebakeInstruction] = useState('');
   const [rebakeSending, setRebakeSending] = useState(false);
   const [rebakeError, setRebakeError] = useState<string | null>(null);
+  const [rebakeRetryVersionId, setRebakeRetryVersionId] = useState<string | null>(null);
+  const [lastRebake, setLastRebake] = useState<{
+    versionId: string;
+    target: string;
+    libraryEntryId: string;
+    instruction: string;
+  } | null>(null);
+
+  // "Try again" (issue #91) is only offered once the current run has actually
+  // finished - while it's still queued, currentVersion is still the parent it
+  // was run against, so retrying now would just repeat the same job.
+  const busy = BUSY_STATUSES.includes(asset.status);
 
   async function refine() {
-    if (!instruction.trim()) return;
+    const targetVersionId = refineRetryVersionId ?? currentVersion?.id;
+    if (!targetVersionId || !instruction.trim()) return;
     setSending(true);
     try {
       await fetch(`/api/assets/${asset.id}/refine`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instruction, rebuildMesh: rebuild }),
+        body: JSON.stringify({ versionId: targetVersionId, instruction, rebuildMesh: rebuild }),
       });
+      setLastRefine({ versionId: targetVersionId, instruction, rebuildMesh: rebuild });
+      setRefineRetryVersionId(null);
       setInstruction('');
       setOpen(false);
       await onChanged();
     } finally {
       setSending(false);
     }
+  }
+
+  /** Re-open the Refine box pre-filled with the last run, targeting its original parent rather than whatever it produced - the same "recall then let the operator confirm or tweak" pattern the defect list's own Rebake button below already uses. */
+  function retryRefine() {
+    if (!lastRefine) return;
+    setInstruction(lastRefine.instruction);
+    setRebuild(lastRefine.rebuildMesh);
+    setRefineRetryVersionId(lastRefine.versionId);
+    setOpen(true);
   }
 
   async function accept() {
@@ -534,7 +565,8 @@ function AssetCard({
    * spec and leaves every existing version's mesh untouched.
    */
   async function rebakePart() {
-    if (!currentVersion) return;
+    const targetVersionId = rebakeRetryVersionId ?? currentVersion?.id;
+    if (!targetVersionId) return;
     const target = rebakeTarget === '__other__' ? rebakeCustomTarget.trim() : rebakeTarget;
     if (!target) {
       setRebakeError('Choose or describe a part first.');
@@ -549,7 +581,7 @@ function AssetCard({
     setRebakeError(null);
     try {
       const response = await fetch(
-        `/api/assets/${asset.id}/versions/${currentVersion.id}/rebake-part`,
+        `/api/assets/${asset.id}/versions/${targetVersionId}/rebake-part`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -561,6 +593,8 @@ function AssetCard({
         },
       );
       if (!response.ok) throw new Error((await response.json()).error ?? 'Could not start');
+      setLastRebake({ versionId: targetVersionId, target, libraryEntryId: rebakeLibraryEntryId, instruction: rebakeInstruction.trim() });
+      setRebakeRetryVersionId(null);
       setRebakeCustomTarget('');
       setRebakeLibraryEntryId('');
       setRebakeInstruction('');
@@ -571,6 +605,17 @@ function AssetCard({
     } finally {
       setRebakeSending(false);
     }
+  }
+
+  /** Same recall-then-confirm pattern as `retryRefine` - always via the `__other__`/custom-text field, since the original parent's part list may not match `currentVersion.spec.components` any more. */
+  function retryRebake() {
+    if (!lastRebake) return;
+    setRebakeTarget('__other__');
+    setRebakeCustomTarget(lastRebake.target);
+    setRebakeLibraryEntryId(lastRebake.libraryEntryId);
+    setRebakeInstruction(lastRebake.instruction);
+    setRebakeRetryVersionId(lastRebake.versionId);
+    setRebakeOpen(true);
   }
 
   async function promoteMaterial(materialId: string) {
@@ -640,12 +685,38 @@ function AssetCard({
               Export BOM
             </a>
           )}
-          <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              // A plain Refine always targets whatever is current - only "Try
+              // again" below should pin the next submit to an older parent.
+              setRefineRetryVersionId(null);
+              setOpen((v) => !v);
+            }}
+          >
             Refine
           </Button>
+          {lastRefine && !busy && (
+            <Button size="sm" variant="ghost" onClick={retryRefine} title="Refine again with the same instruction, against the version it originally ran on">
+              Try again
+            </Button>
+          )}
           {currentVersion?.meshPath && (
-            <Button size="sm" variant="ghost" onClick={() => setRebakeOpen((v) => !v)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setRebakeRetryVersionId(null);
+                setRebakeOpen((v) => !v);
+              }}
+            >
               Rebake part
+            </Button>
+          )}
+          {lastRebake && !busy && (
+            <Button size="sm" variant="ghost" onClick={retryRebake} title="Rebake again with the same material, against the version it originally ran on">
+              Try again
             </Button>
           )}
           <Button size="sm" variant="danger" onClick={remove} disabled={deleting}>
@@ -724,6 +795,7 @@ function AssetCard({
                   size="sm"
                   variant="ghost"
                   onClick={() => {
+                    setRebakeRetryVersionId(null);
                     setRebakeTarget(defect.componentName!);
                     setRebakeOpen(true);
                   }}
@@ -738,6 +810,11 @@ function AssetCard({
 
       {open && (
         <div className="mt-3 space-y-2 border-t border-shell-800 pt-3">
+          {refineRetryVersionId && refineRetryVersionId !== currentVersion?.id && (
+            <p className="text-[11px] text-amber-400">
+              Retrying against the original version this instruction ran on, not the version it produced.
+            </p>
+          )}
           <TextInput
             value={instruction}
             onChange={(e) => setInstruction(e.target.value)}
@@ -764,6 +841,11 @@ function AssetCard({
             Permanently re-bakes one part&apos;s material into a new version&apos;s mesh, leaving every
             other part untouched - unlike Refine, this never re-runs reconstruction.
           </p>
+          {rebakeRetryVersionId && rebakeRetryVersionId !== currentVersion?.id && (
+            <p className="text-[11px] text-amber-400">
+              Retrying against the original version this rebake ran on, not the version it produced.
+            </p>
+          )}
           <Field label="Part">
             <select
               value={rebakeTarget}
